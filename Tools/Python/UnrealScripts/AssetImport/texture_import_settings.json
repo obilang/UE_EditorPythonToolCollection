@@ -1,0 +1,132 @@
+[
+	{
+		"id": "ColorMap",
+		"pattern": ".*bc.*|.*_e.*|.*emissive.*|.*albedo.*",
+		"name": "Color Map (BC)",
+		"description": "base color, emissive",
+		"properties": 
+		{
+			"srgb": true,
+			"compression_settings": "BC1",
+			"mip_gen_settings": "FromTextureGroup",
+			"filter": "default"
+		}
+	},
+	{
+		"id": "Normal",
+		"pattern": ".*_n.*|.*normal.*",
+		"name": "Normal",
+		"description": "Normal Map",
+		"properties": 
+		{
+			"srgb": false,
+			"compression_settings": "Normal",
+			"mip_gen_settings": "FromTextureGroup",
+			"filter": "default"
+		}
+	},
+	{
+		"id": "MRO",
+		"pattern": ".*mro.*|.*_ao.*|.*_mrso.*|.*_sasr.*",
+		"name": "MRO, MRSO, SASR",
+		"description": "MRO, Metallic, Roughness, AO, Specular",
+		"properties": 
+		{
+			"srgb": false,
+			"compression_settings": "BC1",
+			"mip_gen_settings": "FromTextureGroup",
+			"filter": "default"
+		}
+	},
+	{
+		"id": "Mask",
+		"pattern": ".*blendmap.*|.*_cdm.*|.*_dirt.*|.*_mnm.*",
+		"name": "Mask",
+		"description": "Mask, Blend Mask, Emissive Mask, Opacity Mask, Wet Mask, Dirt Mask",
+		"properties": 
+		{
+			"srgb": false,
+			"compression_settings": "BC1",
+			"mip_gen_settings": "FromTextureGroup",
+			"filter": "default"
+		}
+	},
+	{
+		"id": "HDR",
+		"pattern": ".*hdr.*",
+		"name": "HDR",
+		"description": "HDR, Skybox HDR",
+		"properties": 
+		{
+			"srgb": true,
+			"compression_settings": "HDRCompressed",
+			"mip_gen_settings": "FromTextureGroup",
+			"filter": "default"
+		}
+	},
+	{
+		"id": "Flowmap",
+		"pattern": ".*flow.*",
+		"name": "Flow Map",
+		"description": "Water Flow Map, VFX",
+		"properties": 
+		{
+			"srgb": false,
+			"compression_settings": "BC1",
+			"mip_gen_settings": "FromTextureGroup",
+			"filter": "default"
+		}
+	},
+	{
+		"id": "PosMap",
+		"pattern": ".*_pos.*",
+		"name": "Position",
+		"description": "Baked Position Map for WPO Anim",
+		"properties": 
+		{
+			"srgb": false,
+			"compression_settings": "HDR",
+			"mip_gen_settings": "NoMip",
+			"filter": "nearest"
+		}
+	},
+	{
+		"id": "PivotPainter_PivotPos",
+		"pattern": ".*pivotpos.*",
+		"name": "Pivot Painter (PivotPos)",
+		"description": "For Foliage Wind",
+		"properties": 
+		{
+			"srgb": false,
+			"compression_settings": "HDR",
+			"mip_gen_settings": "NoMip",
+			"filter": "nearest"
+		}
+	},
+	{
+		"id": "PivotPainter_XVector",
+		"pattern": ".*xvector.*",
+		"name": "Pivot Painter (XVector)",
+		"description": "For Foliage Wind",
+		"properties": 
+		{
+			"srgb": false,
+			"compression_settings": "VectorDisplacement",
+			"mip_gen_settings": "NoMip",
+			"filter": "nearest"
+		}
+	},
+	{
+		"id": "LUT",
+		"pattern": ".*lut.*",
+		"name": "LUT",
+		"description": "lut textures",
+		"properties": 
+		{
+			"srgb": false,
+			"compression_settings": "VectorDisplacement",
+			"mip_gen_settings": "NoMip",
+			"filter": "nearest"
+		}
+	}
+]

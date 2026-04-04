@@ -1,0 +1,272 @@
+{
+	"actor_context_items": [
+		{
+			"id": "SelectActorInstance",
+			"name": "Select All Mesh(BP) Instance",
+			"script_path": "Tools/Python/UnrealScripts/LevelUtilities/SelectActorInstance.py",
+			"menu_path": "Utils",
+			"tool_type": "Python",
+			"custom_string_command": ""
+		},
+		{
+			"id": "AutoAddShadowProxy",
+			"name": "Add Shadow Proxy",
+			"script_path": "Tools/Python/UnrealScripts/LevelUtilities/add_shadow_proxy_to_mesh.py",
+			"menu_path": "Create",
+			"tool_type": "Python",
+			"custom_string_command": ""
+		},
+		{
+			"id": "AutoSettingShadowProxy",
+			"name": "Set As Shadow Proxy",
+			"script_path": "Tools/Python/UnrealScripts/LevelUtilities/auto_setting_actor_properties.py ShadowProxy",
+			"menu_path": "Actor Type",
+			"tool_type": "Python",
+			"custom_string_command": ""
+		},
+		{
+			"id": "AutoSettingShadowMesh",
+			"name": "Set As Shadow Mesh",
+			"script_path": "Tools/Python/UnrealScripts/LevelUtilities/auto_setting_actor_properties.py ShadowMesh",
+			"menu_path": "Actor Type",
+			"tool_type": "Python",
+			"custom_string_command": ""
+		},
+		{
+			"id": "AutoSettingShadowMeshNoMat",
+			"name": "Set As Shadow Mesh (Not change material)",
+			"script_path": "Tools/Python/UnrealScripts/LevelUtilities/auto_setting_actor_properties.py ShadowMesh_NoChangeMat",
+			"menu_path": "Actor Type",
+			"tool_type": "Python",
+			"custom_string_command": ""
+		},
+		{
+			"id": "AutoSettingCameraBlocker",
+			"name": "Set As Camera Blocker",
+			"script_path": "Tools/Python/UnrealScripts/LevelUtilities/auto_setting_actor_properties.py CameraBlocker",
+			"menu_path": "Actor Type",
+			"tool_type": "Python",
+			"custom_string_command": ""
+		},
+		{
+			"id": "ForceDeleteActor",
+			"name": "Force Delete (Ignore CS)",
+			"script_path": "Tools/Python/UnrealScripts/LevelUtilities/actor_quick_operation.py ForceDelete",
+			"menu_path": "Utils",
+			"tool_type": "Python",
+			"custom_string_command": ""
+		},
+		{
+			"id": "CenterActorPivots",
+			"name": "Center Pivots",
+			"script_path": "Tools/Python/UnrealScripts/LevelUtilities/actor_quick_operation.py CenterPivots",
+			"menu_path": "Utils",
+			"tool_type": "Python",
+			"custom_string_command": ""
+		},
+		{
+			"id": "ReOrderActorByBounds",
+			"name": "Reorder Actors Location By Size",
+			"script_path": "Tools/Python/UnrealScripts/LevelUtilities/actor_quick_operation.py ReOrderByBounds",
+			"menu_path": "Utils",
+			"tool_type": "Python",
+			"custom_string_command": ""
+		},
+		{
+			"id": "SetComponentProperties",
+			"name": "Set Component Properties",
+			"script_path": "Tools/Python/UnrealScripts/LevelUtilities/batch_set_mesh_component_properties_UI.py",
+			"menu_path": "Utils",
+			"tool_type": "Python",
+			"custom_string_command": ""
+		}
+	],
+	"content_browser_context_items": [
+		{
+			"id": "GenerateShadowProxyMesh",
+			"name": "Generate ShadowProxy Mesh",
+			"script_path": "Tools/Python/UnrealScripts/AssetImport/generate_shadow_proxy.py",
+			"menu_path": "Mesh Operations",
+			"tool_type": "Python",
+			"custom_string_command": ""
+		},
+		{
+			"id": "ExportMaterialParameters",
+			"name": "Export Parameters To File",
+			"script_path": "Tools/Python/UnrealScripts/Materials/material_parameter_transfer.py Export",
+			"menu_path": "Material Operations",
+			"tool_type": "Python",
+			"custom_string_command": ""
+		},
+		{
+			"id": "ImportMaterialParameters",
+			"name": "Import Parameters From File",
+			"script_path": "Tools/Python/UnrealScripts/Materials/material_parameter_transfer.py Import",
+			"menu_path": "Material Operations",
+			"tool_type": "Python",
+			"custom_string_command": ""
+		},
+		{
+			"id": "FixMaterialInstanceSave",
+			"name": "Fix Save Material",
+			"script_path": "Tools/Python/UnrealScripts/Materials/force_recompile_material.py",
+			"menu_path": "Material Operations",
+			"tool_type": "Python",
+			"custom_string_command": ""
+		},
+		{
+			"id": "OpenLayerMaterialSP",
+			"name": "Edit Layer Material In Substance Painter",
+			"script_path": "Tools/Python/UnrealScripts/AssetImport/dcc_shortcut.py",
+			"menu_path": "Material Operations",
+			"tool_type": "Python",
+			"custom_string_command": ""
+		},
+		{
+			"id": "ExportMaterialSlots",
+			"name": "Export Material Slots To File",
+			"script_path": "Tools/Python/UnrealScripts/Materials/material_slots_transfer.py Export",
+			"menu_path": "Mesh Operations",
+			"tool_type": "Python",
+			"custom_string_command": ""
+		},
+		{
+			"id": "ImportMaterialSlots",
+			"name": "Import Material Slots From File",
+			"script_path": "Tools/Python/UnrealScripts/Materials/material_slots_transfer.py Import",
+			"menu_path": "Mesh Operations",
+			"tool_type": "Python",
+			"custom_string_command": ""
+		},
+		{
+			"id": "ExportTextureAsTGA",
+			"name": "Export as TGA",
+			"script_path": "Tools/Python/UnrealScripts/AssetImport/export_textures_as.py tga",
+			"menu_path": "Texture Operations",
+			"tool_type": "Python",
+			"custom_string_command": ""
+		},
+		{
+			"id": "ExportTextureAsPNG",
+			"name": "Export as PNG",
+			"script_path": "Tools/Python/UnrealScripts/AssetImport/export_textures_as.py png",
+			"menu_path": "Texture Operations",
+			"tool_type": "Python",
+			"custom_string_command": ""
+		},
+		{
+			"id": "ModifyTextureSetting",
+			"name": "Modify Texture Properties",
+			"script_path": "Tools/Python/UnrealScripts/AssetOperations/modify_texture_settings.py",
+			"menu_path": "Texture Operations",
+			"tool_type": "Python",
+			"custom_string_command": ""
+		},
+		{
+			"id": "ModifyBPProperties",
+			"name": "Modify Blueprint Properties",
+			"script_path": "Tools/Python/UnrealScripts/AssetOperations/modify_bp_properties.py",
+			"menu_path": "Utils",
+			"tool_type": "Python",
+			"custom_string_command": ""
+		},
+		{
+			"id": "ModifyMeshSetting",
+			"name": "Modify Mesh Properties",
+			"script_path": "Tools/Python/UnrealScripts/AssetOperations/modify_mesh_settings.py",
+			"menu_path": "Mesh Operations",
+			"tool_type": "Python",
+			"custom_string_command": ""
+		}
+	],
+	"menu_items": [
+		{
+			"id": "TemplateWindowUI",
+			"name": "Template Window",
+			"script_path": "Tools/Python/UnrealScripts/Templates/template_window_UI.py",
+			"menu_path": "Sample",
+			"tool_type": "Python",
+			"custom_string_command": ""
+		},
+		{
+			"id": "PBRValidation",
+			"name": "PBR Validation",
+			"script_path": "/Game/Tools/EditorUtilities/PBRValidation/EUW_PBRValidate.EUW_PBRValidate",
+			"menu_path": "Validation",
+			"tool_type": "Blueprint",
+			"custom_string_command": ""
+		},
+		{
+			"id": "CheckDuplicatedActor",
+			"name": "Find Duplicated Actor UI",
+			"script_path": "Tools/Python/UnrealScripts/LevelUtilities/CheckDuplicatedActor_UI.py",
+			"menu_path": "LevelUtilities",
+			"tool_type": "Python",
+			"custom_string_command": ""
+		},
+		{
+			"id": "DeleteEmptyFolder",
+			"name": "Delete Empty Folder UI",
+			"script_path": "Tools/Python/UnrealScripts/ProjectOrganize/delete_empty_folder_UI.py",
+			"menu_path": "Utils",
+			"tool_type": "Python",
+			"custom_string_command": ""
+		},
+		{
+			"id": "MaterialParameterChecker",
+			"name": "Material Parameter Checker",
+			"script_path": "Tools/Python/UnrealScripts/Materials/material_parameter_checker_UI.py",
+			"menu_path": "Material",
+			"tool_type": "Python",
+			"custom_string_command": ""
+		},
+		{
+			"id": "CharacterCSLightingSetup",
+			"name": "Character Lighting Setup Tool",
+			"script_path": "Tools/Python/UnrealScripts/Cinematic/cs_character_lighting_setup_UI.py",
+			"menu_path": "Cinematic",
+			"tool_type": "Python",
+			"custom_string_command": ""
+		},
+		{
+			"id": "AdjustCSLightsIntensity",
+			"name": "Adjust Lights Intensity Tool",
+			"script_path": "Tools/Python/UnrealScripts/Cinematic/cs_adjust_lights_intensity_UI.py",
+			"menu_path": "Cinematic",
+			"tool_type": "Python",
+			"custom_string_command": ""
+		},
+		{
+			"id": "AssetCommonTool",
+			"name": "Asset Common Tool",
+			"script_path": "Tools/Python/UnrealScripts/AssetOperations/asset_common_tool_UI.py",
+			"menu_path": "AssetUtilities",
+			"tool_type": "Python",
+			"custom_string_command": ""
+		},
+		{
+			"id": "TreeBPChecker",
+			"name": "Tree BP Checker",
+			"script_path": "Tools/Python/UnrealScripts/Validation/validate_bp_tree_UI.py",
+			"menu_path": "Validation",
+			"tool_type": "Python",
+			"custom_string_command": ""
+		},
+		{
+			"id": "GlobalPythonConfig",
+			"name": "Python Tool Config",
+			"script_path": "Tools/Python/UnrealScripts/Config/global_config_ui.py",
+			"menu_path": "Config",
+			"tool_type": "Python",
+			"custom_string_command": ""
+		},
+		{
+			"id": "CharacterReviewGym",
+			"name": "Character Review Gym",
+			"script_path": "Tools/Python/UnrealScripts/Character/character_review_gym_UI.py",
+			"menu_path": "Utils",
+			"tool_type": "Python",
+			"custom_string_command": ""
+		}
+	]
+}

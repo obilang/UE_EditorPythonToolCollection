@@ -1,0 +1,19 @@
+# Python packages to install into .\Libs using Unreal Engine's Python.
+# One package per line. Versions are optional.
+# Lines starting with # are comments.
+#
+# These packages will be downloaded and extracted into the .\Libs folder
+# so that they are available to Unreal Engine's embedded Python runtime.
+#
+# Examples:
+#   numpy
+#   Pillow==10.4.0
+#   imageio>=2.34.0
+
+numpy
+Pillow
+imageio
+PySide6
+shiboken6
+scipy
+P4Python

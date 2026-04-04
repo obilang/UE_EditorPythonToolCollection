@@ -1,0 +1,70 @@
+{
+	"M_FoliageGrass": {
+		"scalar": [
+			"Roughness Contrast",
+			"Base Color Hue Shift",
+			"Foliage_SubsurfaceColor Multiplier",
+			"Metallic",
+			"Roughness Brightness",
+			"Ao_Intensity",
+			"Foliage_Normal_Intensity",
+			"Specular Value",
+			"Wet Roughness Lerp Scale",
+			"Wet Specular",
+			"Wet Value",
+			"RefractionDepthBias",
+			"Color Variation Mask Tiling",
+			"Color Variation Max Value Bias",
+			"Color Variation Min Value Bias"
+		],
+		"vector": [
+			"Albedo Controls",
+			"Tint"
+		],
+		"texture": [
+			"Noise Texture"
+		],
+		"staticswitch": [
+			"Color Variation",
+			"Globally Controlled By Weather BP",
+			"Custom Specular"
+		]
+	},
+	"M_FoliageTree": {
+		"scalar": [
+			"Roughness Contrast",
+			"Base Color Hue Shift",
+			"Foliage_SubsurfaceColor Multiplier",
+			"Foliage_SubsurfaceColor Multiplier Far",
+			"Metallic",
+			"Roughness Brightness",
+			"Ao_Intensity_Leaf",
+			"Foliage_Normal_Intensity",
+			"Specular Value",
+			"Wet Roughness Lerp Scale",
+			"Wet Specular",
+			"Wet Value",
+			"Branch Roughness Contrast",
+			"Branch  Roughness Brightness",
+			"Ao_Intensity_Branch",
+			"Detail_Normal_Intensity",
+			"RefractionDepthBias",
+			"Color Variation Mask Tiling",
+			"Color Variation Max Value Bias",
+			"Color Variation Min Value Bias"
+		],
+		"vector": [
+			"Tint_Leaf",
+			"Base Color Controls",
+			"Tint_Branch"
+		],
+		"texture": [
+			"Noise Texture"
+		],
+		"staticswitch": [
+			"Color Variation",
+			"Globally Controlled By Weather BP",
+			"Custom Specular"
+		]
+	}
+}

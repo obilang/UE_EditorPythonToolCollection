@@ -1,0 +1,2 @@
+import global_state
+global_state.g_is_tool_importing_asset = True
