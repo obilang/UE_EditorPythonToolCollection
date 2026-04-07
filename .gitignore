@@ -9,7 +9,7 @@
 **/*.pyc
 
 # Only track these folders
-!/Plugins
+!/Plugins/PythonLib
 !/Tools
 
 # Ignore Binaries and Intermediate inside Plugins
