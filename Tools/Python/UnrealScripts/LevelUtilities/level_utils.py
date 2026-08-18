@@ -126,3 +126,26 @@ def get_visible_sub_levels() -> Set[unreal.Level]:
                 visible_levels.add(x.get_loaded_level())
     return visible_levels
 
+
+def get_mesh_components_of_static_mesh(static_mesh: unreal.StaticMesh) -> List[unreal.StaticMeshComponent]:
+    result = []
+    all_components = editor_actor_subsystem.get_all_level_actors_components()
+    smcs = editor_filter_lib.by_class(all_components, unreal.StaticMeshComponent)
+    for smc in smcs:
+        sm = smc.get_editor_property("static_mesh")
+        if sm is None:
+            continue
+        if sm == static_mesh:
+            result.append(smc)
+    return result
+
+
+def foucs_camera_on_actor_in_level(actor: unreal.Actor, active_viewport_only=True):
+    command = "CAMERA ALIGN"
+    if active_viewport_only:
+        command += " ACTIVEVIEWPORTONLY"
+    if actor is not None:
+        command += " NAME=" + actor.get_name()
+    
+    editor_world = unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem).get_editor_world()
+    unreal.SystemLibrary().execute_console_command(editor_world, command)

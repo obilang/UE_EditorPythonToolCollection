@@ -70,6 +70,34 @@ def get_material_texture_param_value(
 
         if param_info.name == param_name and param_info.association == association and param_info.index == index:
             return texture_parameter.parameter_value
+        
+
+def get_material_scalar_param_value(
+    material_instance,
+    param_name,
+    association: unreal.MaterialParameterAssociation = unreal.MaterialParameterAssociation.GLOBAL_PARAMETER,
+    index=-1
+):
+    scalar_parameters = material_instance.get_editor_property("scalar_parameter_values")
+    for count, scalar_parameter in enumerate(scalar_parameters):
+        param_info: unreal.MaterialParameterInfo = scalar_parameter.parameter_info
+
+        if param_info.name == param_name and param_info.association == association and param_info.index == index:
+            return scalar_parameter.parameter_value
+        
+
+def get_material_vector_param_value(
+    material_instance,
+    param_name,
+    association: unreal.MaterialParameterAssociation = unreal.MaterialParameterAssociation.GLOBAL_PARAMETER,
+    index=-1
+):
+    vector_parameters = material_instance.get_editor_property("vector_parameter_values")
+    for count, vector_parameter in enumerate(vector_parameters):
+        param_info: unreal.MaterialParameterInfo = vector_parameter.parameter_info
+
+        if param_info.name == param_name and param_info.association == association and param_info.index == index:
+            return vector_parameter.parameter_value
 
 
 def set_material_scalar_param_value(

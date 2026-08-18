@@ -1,6 +1,6 @@
 # ---- QLabel Styles ----
 LABEL_TITLE_MAIN = ''' font-size: 30px; '''
-LABEL_TITLE_SECTION_LARGE = ''' font-size: 24px; '''
+LABEL_TITLE_SECTION_LARGE = ''' font-size: 24px; color: rgb(84, 170, 211);'''
 
 LABEL_NORMAL_HIGHLIGHT = ''' font-size: 14px; font-weight: bold; color: rgb(255, 120, 25);'''
 
