@@ -10,7 +10,7 @@
 
 # Only track these folders
 !/Plugins/PythonLib
-!/Tools
+!/Tools/Python
 
 # Ignore Binaries and Intermediate inside Plugins
 /Plugins/**/Binaries
