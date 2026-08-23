@@ -30,6 +30,9 @@ def p4_init(server, user, workspace):
 def ue_perforce_config():
     config_file_path = os.path.realpath(os.path.join(path_util.ue_project_root(), UE_SOURCE_CONTROL_CONFIG_PATH))
     if os.path.exists(config_file_path):
+        p4_server = None
+        p4_user = None
+        p4_workspace = None
         with open(config_file_path, 'r') as file:
             lines = file.readlines()
             p4_config_start = False
@@ -39,11 +42,11 @@ def ue_perforce_config():
                     p4_config_start = True
                 if p4_config_start:
                     if line.startswith("Port"):
-                        p4_server = line.split("=")[1]
+                        p4_server = line.split("=", 1)[1]
                     elif line.startswith("UserName"):
-                        p4_user = line.split("=")[1]
+                        p4_user = line.split("=", 1)[1]
                     elif line.startswith("Workspace"):
-                        p4_workspace = line.split("=")[1]
+                        p4_workspace = line.split("=", 1)[1]
                         break
             return p4_server, p4_user, p4_workspace
     return None, None, None
@@ -59,6 +62,48 @@ def p4_init_ue_editor():
             return True
     else:
         return False
+
+
+def p4_login_ue_editor(password):
+    """Log in using the Perforce connection configured by the Unreal Editor.
+
+    ``password`` is intentionally accepted only at call time.  Callers should
+    obtain it from a secure local store and must not persist it in project
+    files.
+    """
+    p4_server, p4_user, p4_workspace = ue_perforce_config()
+    if not all((p4_server, p4_user, p4_workspace)):
+        raise RuntimeError("Perforce server, user, or workspace is not configured in Unreal Editor.")
+
+    global _p4_server
+    global _p4_user
+    global _p4_workspace
+    global _p4
+    _p4_server = p4_server
+    _p4_user = p4_user
+    _p4_workspace = p4_workspace
+
+    if not _p4:
+        _p4 = P4()
+        atexit.register(p4_exit)
+
+    if _p4.connected():
+        _p4.disconnect()
+
+    _p4.port = _p4_server
+    _p4.user = _p4_user
+    _p4.client = _p4_workspace
+    _p4.exception_level = 1
+    _p4.connect()
+    try:
+        _p4.password = password
+        _p4.run_login()
+        _p4.run("info")
+    finally:
+        # Do not keep the password on the long-lived P4Python object.
+        _p4.password = ""
+
+    return _p4
 
 
 def _init_p4(force_reconnect=False):
@@ -84,7 +129,7 @@ def _init_p4(force_reconnect=False):
 
 
 def p4_exit():
-    if _p4 and _p4.connected:
+    if _p4 and _p4.connected():
         _p4.disconnect()
 
 
