@@ -255,6 +255,35 @@ def get_depot_file(filepath):
     return None
 
 
+def list_files_in_depot(parent_path):
+    if not _init_p4():
+        return False
+
+    try:
+        file_spec = f"{parent_path}/..."
+        file_list = _p4.run("files", file_spec)
+        return [file_info['depotFile'] for file_info in file_list]
+    except P4Exception as e:
+        for error in _p4.errors:
+            print(error)
+    return None
+
+
+def search_files_by_name(depo_path, filename):
+    """ Search for files in the depot by filename """
+    if not _init_p4():
+        return None
+
+    try:
+        file_spec = f"//{depo_path}/.../{filename}"
+        file_list = _p4.run("files", file_spec)
+        return [file_info['depotFile'] for file_info in file_list]
+    except P4Exception as e:
+        for error in _p4.errors:
+            print(error)
+    return None
+
+
 def get_file_history(filepath):
     """
 [
@@ -312,3 +341,18 @@ def get_file_history_user_details(filepath):
                 max_changes = change_count
 
     return last_changed_by, created_by, modified_most_by, last_change_date
+
+def get_changelists_between(dept_path, start_cl, end_cl, exclude_desc=[], exclude_cl=[]):
+    if not _init_p4():
+        return False
+    
+    results = _p4.run(["changes", "-s", "submitted", "{}/...@{},@{}".format(dept_path, start_cl, end_cl)])
+    change_list_nums = []
+    for change in results:
+        change_list_num = change["change"]
+        if int(change_list_num) in exclude_cl:
+            continue
+        if not any(desc in change["desc"] for desc in exclude_desc):
+            change_list_nums.append(change_list_num)
+    
+    return change_list_nums
