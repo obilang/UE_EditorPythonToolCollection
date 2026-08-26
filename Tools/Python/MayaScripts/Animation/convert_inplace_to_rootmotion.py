@@ -181,16 +181,38 @@ def _delta_to_yaw_dxz(delta):
     return d_yaw, delta[12], delta[14]
 
 
-def _project_onto_axis(dx, dz, axis_deg):
-    """Project a (dx, dz) vector onto the world heading ``axis_deg``.
+def _rotate_xz(x, z, yaw):
+    """Rotate a ground-plane vector by ``yaw`` radians about Y.
 
-    Uses the same convention as ``_yaw_from_matrix`` (0deg = +Z, 90deg = +X),
-    so a locked axis lines up with the yaw the tool already reports.
+    Matches ``_ground_matrix`` exactly (row-vector convention), so this is the
+    same transform the accumulation applies when it turns a *local* travel step
+    into a *world* one.
+    """
+    c = math.cos(yaw)
+    s = math.sin(yaw)
+    return x * c + z * s, -x * s + z * c
+
+
+def _redirect_onto_axis(dx, dz, axis_deg):
+    """Aim a travel step along ``axis_deg`` while keeping its length.
+
+    Uses the same convention as ``_yaw_from_matrix`` (0deg = +Z / forward,
+    90deg = +X / side), so a locked axis lines up with the yaw the tool
+    already reports.
+
+    Note this *redirects* rather than projects.  A projection scales the step
+    by the cosine of its angle to the axis, so it shrinks the travel as the
+    body turns away from the axis and annihilates it completely at 90deg --
+    which reads as the root stalling mid-clip.  Redirecting keeps the
+    foot-derived *speed* and overrides only the *direction*, so the lock can
+    never stall the root.  The sign is preserved: a step that was heading
+    backwards along the axis keeps heading backwards.
     """
     rad = math.radians(axis_deg)
     ux, uz = math.sin(rad), math.cos(rad)
-    proj = dx * ux + dz * uz
-    return proj * ux, proj * uz
+    mag = math.hypot(dx, dz)
+    sign = 1.0 if (dx * ux + dz * uz) >= 0.0 else -1.0
+    return sign * mag * ux, sign * mag * uz
 
 
 # ---------------------------------------------------------------------------
@@ -415,7 +437,7 @@ def _circular_blend(yaws, weights):
         sum(w * math.cos(y) for y, w in zip(yaws, weights)))
 
 
-def _accumulate_root_deltas(grounds, weights, lock_axis=None):
+def _accumulate_root_deltas(grounds, weights, lock_mode=None, lock_axis=0.0):
     """Build the accumulated world-space root delta D(f) for every frame.
 
     Returns a list of MMatrix, one per frame, with D(0) = identity.  Frames with
@@ -423,29 +445,39 @@ def _accumulate_root_deltas(grounds, weights, lock_axis=None):
     delta rather than pinning a fast-moving swing point.  The keyed rotation
     curve is Euler-unwrapped afterwards in ``_apply_root``.
 
-    ``lock_axis``, if not ``None``, is a heading in degrees expressed relative
-    to the body's *current* facing (same convention as yaw: 0 = forward,
-    90 = side).  Each frame's blended *local* travel step -- before it gets
-    rotated into world space by the accumulated heading -- is projected onto
-    that direction, forcing the predicted travel to always point the chosen
-    way relative to however the body is currently facing (e.g. "always
-    forward, never sideways") instead of whatever direction the noisy foot
-    blend produces.  Locking pre-rotation like this means the root still
-    curves naturally through world space if the clip turns; it only removes
-    drift relative to the body's own heading.  Yaw itself is never affected.
+    ``lock_mode`` picks how (and whether) to constrain the travel *direction*.
+    Yaw is never touched by any of them, and none of them can stall the root --
+    the step's length always survives, only its direction is overridden::
+
+        None      the foot blend decides the direction; the path curves
+                  wherever the feet say it should.
+        "body"    every step is aimed along ``lock_axis`` measured from the
+                  body's *current* facing, so the path still curves through a
+                  turn but never drifts sideways relative to the body.
+        "world"   every step is aimed along ``lock_axis`` measured in *world*
+                  space, so the path is a straight world line no matter how
+                  the body turns.
+
+    ``lock_axis`` is degrees in the usual convention (0 = forward / +Z,
+    90 = side / +X).
+
+    The distinction matters because the accumulation rotates each *local* step
+    by the heading built up so far (``T_f = t_f * R_{f-1} + T_{f-1}``).  So a
+    step locked to local +X in a clip that turns to -32deg lands at 90-32 =
+    58deg in world -- correct for "body", wrong for "straight world line".
     """
     n = len(grounds[0])
     npts = len(grounds)
     d = om.MMatrix()  # identity
     deltas = [om.MMatrix(d)]
-    prev_blended = None
+    prev_step = None
 
     for i in range(1, n):
         w, confidence = weights[i]
 
-        if confidence < _CONTACT_FLOOR and prev_blended is not None:
-            # Nothing is convincingly planted: coast on the last good delta.
-            blended = prev_blended
+        if confidence < _CONTACT_FLOOR and prev_step is not None:
+            # Nothing is convincingly planted: coast on the last good step.
+            d_yaw, b_x, b_z = prev_step
         else:
             # each point's own pin delta: point(f)^-1 * point(f-1)
             yaws, dxs, dzs = [], [], []
@@ -459,17 +491,22 @@ def _accumulate_root_deltas(grounds, weights, lock_axis=None):
             d_yaw = _circular_blend(yaws, w)
             b_x = sum(w[j] * dxs[j] for j in range(npts))
             b_z = sum(w[j] * dzs[j] for j in range(npts))
+            prev_step = (d_yaw, b_x, b_z)
 
-            if lock_axis is not None:
-                proj_x, proj_z = _project_onto_axis(b_x, b_z, lock_axis)
-                print("[axis_lock] i={} lock_axis={} local_step=({:.5f},{:.5f}) "
-                      "projected=({:.5f},{:.5f})".format(
-                          i, lock_axis, b_x, b_z, proj_x, proj_z))
-                b_x, b_z = proj_x, proj_z
+        # Locking happens *after* the coast branch, so a coasted step is still
+        # re-aimed for the heading it is actually being applied at.
+        if lock_mode == "body":
+            b_x, b_z = _redirect_onto_axis(b_x, b_z, lock_axis)
+        elif lock_mode == "world":
+            # Hop into world space (where the axis is defined), aim, hop back:
+            # the accumulation will rotate this local step by exactly the same
+            # heading again, so the world step lands on the axis.
+            heading = _yaw_from_matrix(d)          # d is still D(f-1) here
+            w_x, w_z = _rotate_xz(b_x, b_z, heading)
+            w_x, w_z = _redirect_onto_axis(w_x, w_z, lock_axis)
+            b_x, b_z = _rotate_xz(w_x, w_z, -heading)
 
-            blended = _ground_matrix(d_yaw, b_x, b_z)
-            prev_blended = blended
-
+        blended = _ground_matrix(d_yaw, b_x, b_z)
         d = blended * d            # D(f) = delta(f) * D(f-1)
         deltas.append(om.MMatrix(d))
 
@@ -621,7 +658,7 @@ def _apply_root(root, frames, deltas, clear_existing=True):
 # ---------------------------------------------------------------------------
 
 def convert(root, foot_l, foot_r, start=None, end=None, clear_existing=True,
-            sharpness=_CONTACT_SHARPNESS, lock_axis=None,
+            sharpness=_CONTACT_SHARPNESS, lock_mode=None, lock_axis=0.0,
             pin_l_ranges=None, pin_r_ranges=None,
             use_toes=True, toe_l=None, toe_r=None):
     """Synthesise root motion for an in-place cycle and key it onto ``root``.
@@ -640,19 +677,20 @@ def convert(root, foot_l, foot_r, start=None, end=None, clear_existing=True,
         Contact-blend sharpness (>= 1). Raise it if the feet still slide (root
         too slow); lower it towards 1 if the root motion looks jittery. ~8 is a
         good default; 1 is the original soft blend (~half speed).
-    lock_axis : float or None
-        Heading in degrees, relative to the body's current facing, to
-        manually pin the predicted travel direction to (same convention as
-        yaw: 0 = forward, 90 = side). ``None`` (default) leaves the
-        direction free, as computed from the foot blend. Use this when the
-        foot-blend prediction drifts sideways relative to how the body is
-        actually facing (e.g. a walk that should track straight ahead with
-        zero strafe) -- each frame's local travel step is projected onto this
-        axis, relative to the current heading, before being rotated into
-        world space and accumulated. Because the lock tracks the body's own
-        turning, the root still curves naturally through a clip that turns;
-        only drift relative to the heading is removed. Rotation (yaw) is
-        never affected.
+    lock_mode : {None, "body", "world"}
+        How to constrain the predicted travel *direction*. ``None``
+        (default) leaves it free -- the foot blend decides, and the path
+        curves wherever the feet say. ``"body"`` aims every step along
+        ``lock_axis`` measured from the body's current facing, killing
+        sideways drift while still letting the path curve through a turn.
+        ``"world"`` aims every step along ``lock_axis`` measured in world
+        space, giving a straight world line however much the body turns.
+        In every mode the step's *length* survives untouched -- only its
+        direction is overridden -- so a lock can never stall the root, and
+        rotation (yaw) is never affected.
+    lock_axis : float
+        The locked heading in degrees, same convention as yaw (0 = forward
+        / +Z, 90 = side / +X). Ignored when ``lock_mode`` is ``None``.
     pin_l_ranges, pin_r_ranges : list of (start, end) or None
         Frame ranges (inclusive) where the left / right *side* should be
         pinned, overriding whatever ``_contact_weights`` computed. The
@@ -741,7 +779,15 @@ def convert(root, foot_l, foot_r, start=None, end=None, clear_existing=True,
     if pin_l_ranges or pin_r_ranges:
         weights = _apply_pin_overrides(frames, weights, sides,
                                        pin_l_ranges, pin_r_ranges)
-    deltas = _accumulate_root_deltas(grounds, weights, lock_axis=lock_axis)
+    if lock_mode not in (None, "body", "world"):
+        raise ValueError(
+            "lock_mode must be None, 'body' or 'world', not {0!r}".format(
+                lock_mode))
+    print("[axis_lock] mode={0} axis={1}".format(
+        lock_mode or "free", lock_axis if lock_mode else "n/a"))
+
+    deltas = _accumulate_root_deltas(grounds, weights, lock_mode=lock_mode,
+                                     lock_axis=lock_axis)
     _report_pins(frames, nodes, sides, tiers, grounds, raw_ys, weights, deltas)
     _apply_root(root, frames, deltas, clear_existing=clear_existing)
 
@@ -770,26 +816,43 @@ def _set_from_selection(field):
     cmds.textField(_FIELDS[field], edit=True, text=sel[0])
 
 
-_AXIS_LOCK_ITEMS = ("Free (no lock)", "Forward / Back", "Left / Right (strafe)",
+_LOCK_MODE_ITEMS = ("Free -- curve wherever the feet say",
+                    "Straight line in world space",
+                    "Follow the body's facing")
+_LOCK_MODES = {
+    "Free -- curve wherever the feet say": None,
+    "Straight line in world space": "world",
+    "Follow the body's facing": "body",
+}
+
+_AXIS_LOCK_ITEMS = ("0 deg -- forward / +Z", "90 deg -- side / +X",
                     "Custom angle...")
 _AXIS_LOCK_DEGREES = {
-    "Free (no lock)": None,
-    "Forward / Back": 0.0,
-    "Left / Right (strafe)": 90.0,
+    "0 deg -- forward / +Z": 0.0,
+    "90 deg -- side / +X": 90.0,
 }
 
 
-def _resolve_lock_axis():
+def _resolve_lock():
+    """Return ``(lock_mode, lock_axis)`` from the two lock dropdowns."""
+    mode = _LOCK_MODES[cmds.optionMenu(_FIELDS["lock_mode_menu"], q=True,
+                                       value=True)]
     choice = cmds.optionMenu(_FIELDS["axis_lock_menu"], q=True, value=True)
     if choice == "Custom angle...":
-        return cmds.floatField(_FIELDS["axis_lock_angle"], q=True, value=True)
-    return _AXIS_LOCK_DEGREES[choice]
+        axis = cmds.floatField(_FIELDS["axis_lock_angle"], q=True, value=True)
+    else:
+        axis = _AXIS_LOCK_DEGREES[choice]
+    return mode, axis
 
 
 def _toggle_axis_angle(*_):
+    """Grey out whatever the current lock mode / axis choice does not use."""
+    locked = _LOCK_MODES[cmds.optionMenu(_FIELDS["lock_mode_menu"], q=True,
+                                         value=True)] is not None
     choice = cmds.optionMenu(_FIELDS["axis_lock_menu"], q=True, value=True)
+    cmds.optionMenu(_FIELDS["axis_lock_menu"], edit=True, enable=locked)
     cmds.floatField(_FIELDS["axis_lock_angle"], edit=True,
-                    enable=(choice == "Custom angle..."))
+                    enable=(locked and choice == "Custom angle..."))
 
 
 def _toggle_toes(value):
@@ -821,8 +884,7 @@ def _on_convert(*_):
     use_toes = cmds.checkBox(_FIELDS["use_toes"], q=True, value=True)
     toe_l = cmds.textField(_FIELDS["toe_l"], q=True, text=True).strip() or None
     toe_r = cmds.textField(_FIELDS["toe_r"], q=True, text=True).strip() or None
-    lock_axis = _resolve_lock_axis()
-    print("[axis_lock] resolved lock_axis from UI = {}".format(lock_axis))
+    lock_mode, lock_axis = _resolve_lock()
 
     start = end = None
     if use_range:
@@ -842,7 +904,7 @@ def _on_convert(*_):
 
     try:
         convert(root, foot_l, foot_r, start=start, end=end, clear_existing=clear,
-                sharpness=sharpness, lock_axis=lock_axis,
+                sharpness=sharpness, lock_mode=lock_mode, lock_axis=lock_axis,
                 pin_l_ranges=pin_l_ranges, pin_r_ranges=pin_r_ranges,
                 use_toes=use_toes, toe_l=toe_l, toe_r=toe_r)
     except Exception as exc:  # surface the error to the user, not just the log
@@ -902,16 +964,31 @@ def show_ui():
                    "if root motion is jittery.")
     cmds.setParent("..")
 
+    cmds.rowLayout(numberOfColumns=2, columnWidth2=(160, 210),
+                   columnAlign=(1, "right"))
+    cmds.text(label="Travel direction:")
+    _FIELDS["lock_mode_menu"] = cmds.optionMenu(
+        changeCommand=_toggle_axis_angle,
+        annotation="How to constrain the direction the root travels. "
+                   "Free = the foot blend decides, path curves wherever the "
+                   "feet say. Straight line in world space = the path is a "
+                   "straight world line no matter how the body turns. Follow "
+                   "the body's facing = the path curves with the turn but "
+                   "never drifts sideways relative to the body. Speed always "
+                   "comes from the feet, so no mode can stall the root, and "
+                   "rotation is never affected.")
+    for item in _LOCK_MODE_ITEMS:
+        cmds.menuItem(label=item)
+    cmds.setParent("..")
+
     cmds.rowLayout(numberOfColumns=2, columnWidth2=(160, 150),
                    columnAlign=(1, "right"))
-    cmds.text(label="Axis lock:")
+    cmds.text(label="Locked axis:")
     _FIELDS["axis_lock_menu"] = cmds.optionMenu(
-        changeCommand=_toggle_axis_angle,
-        annotation="Pin the predicted travel direction relative to the "
-                   "body's current facing instead of letting the foot blend "
-                   "pick it (kills side-to-side drift/strafe). The root "
-                   "still curves naturally through a turn. Rotation is "
-                   "never affected.")
+        changeCommand=_toggle_axis_angle, enable=False,
+        annotation="Which direction to lock to. Read as world-space when the "
+                   "mode is 'Straight line in world space', or relative to "
+                   "the body's facing when it is 'Follow the body's facing'.")
     for item in _AXIS_LOCK_ITEMS:
         cmds.menuItem(label=item)
     cmds.setParent("..")
@@ -921,9 +998,8 @@ def show_ui():
     cmds.text(label="Custom angle (deg):")
     _FIELDS["axis_lock_angle"] = cmds.floatField(
         value=0.0, precision=1, enable=False,
-        annotation="Heading in degrees relative to the body's current "
-                   "facing (0 = forward, 90 = side), same convention as "
-                   "the tool's yaw.")
+        annotation="Heading in degrees, same convention as the tool's yaw "
+                   "(0 = forward / +Z, 90 = side / +X).")
     cmds.setParent("..")
 
     _FIELDS["use_toes"] = cmds.checkBox(
