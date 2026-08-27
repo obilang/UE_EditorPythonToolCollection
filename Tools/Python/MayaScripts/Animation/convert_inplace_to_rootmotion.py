@@ -48,6 +48,13 @@ it gives a confident pin exactly where the ankles are ambiguous.  Because a toe
 sits systematically lower than an ankle, the contact height gate is normalized
 per *tier* (ankles against ankles, toes against toes) rather than globally.
 
+A run has no support foot at all during its flight phase, so there is nothing
+to pin and nothing to measure -- yet the character is obviously still moving.
+By default those frames *coast* on the last foot-derived step, which is a decent
+guess but only a guess.  ``air_ranges`` lets you name those frames explicitly
+and either hold the incoming speed or dictate it outright, so the ballistic part
+of a stride is yours to set rather than inferred from feet that are in the air.
+
 Finally the root's world transform per frame becomes ``R0 * D(f)`` (``R0`` = the
 root's original, static world matrix) and is keyed onto the root joint.  The body
 rides forward with it and the feet stop sliding.
@@ -74,6 +81,10 @@ or headless / scripted::
         foot_r="ankle_r",
         start=None, end=None,   # None -> playback range
         use_toes=True,          # also pin the toes; auto-found under each foot
+        pin_l_ranges=[(1, 8)],  # frames the left side is definitely planted
+        derive_pin_r=True,      # right = everything left and air don't claim
+        air_ranges=[(9, 12, None)],       # flight phase: hold incoming speed
+        # air_ranges=[(9, 12, 12.5)],     # ...or dictate units-per-frame
     )
 """
 
@@ -111,10 +122,59 @@ _CONTACT_SHARPNESS = 8.0
 _CONTACT_FLOOR = 0.15
 _EPS = 1e-8
 
+# Sentinel distinguishing "no entry for this frame" from a stored ``None``
+# (which is a meaningful value: "hold the incoming speed").
+_MISSING = object()
+
+
+# ---------------------------------------------------------------------------
+# rig defaults
+# ---------------------------------------------------------------------------
+
+# The tool does not hunt for joints by name -- these only pre-fill the UI, so a
+# rig you work on every day is zero typing.  Two ways to change them: edit this
+# dict, or fill the fields in Maya and hit "Save names as default", which stores
+# them in Maya's optionVars (survives a restart and takes precedence over what
+# is written here).  An empty string just means "no default".
+_DEFAULT_NODES = {
+    "root": "n_root",
+    "foot_l": "j_leg_03_l",
+    "foot_r": "j_leg_03_r",
+    "toe_l": "j_toe_l",
+    "toe_r": "j_toe_r",
+}
+_OPTVAR_PREFIX = "inplaceToRootMotion_"
+
 
 # ---------------------------------------------------------------------------
 # small math helpers (everything in Maya row-vector convention: p_world = p*M)
 # ---------------------------------------------------------------------------
+
+def _resolve_node(name):
+    """Find ``name`` in the scene, tolerating namespaces and hierarchy.
+
+    Saved defaults are bare joint names, but the same rig referenced into a
+    shot arrives as ``charA:j_toe_l`` -- so an exact-name lookup would fail on
+    exactly the setup the defaults exist to serve.  Falls back to matching the
+    short name (namespace and full path stripped) against every joint in the
+    scene.  Raises on an ambiguous match rather than silently picking one of
+    two characters' feet.
+    """
+    if cmds.objExists(name):
+        return name
+
+    short = name.split("|")[-1].split(":")[-1]
+    hits = [n for n in (cmds.ls(type="joint", long=True) or [])
+            if n.split("|")[-1].split(":")[-1] == short]
+    if not hits:
+        raise ValueError("Node does not exist: '{0}'".format(name))
+    if len(hits) > 1:
+        raise ValueError(
+            "'{0}' is ambiguous -- {1} joints share that name: {2}. Use the "
+            "full path or namespace.".format(name, len(hits), ", ".join(hits)))
+    print("[nodes] '{0}' resolved to '{1}'".format(name, hits[0]))
+    return hits[0]
+
 
 def _world_matrix(node, attr="worldMatrix"):
     """Current world matrix of ``node`` as an MMatrix (sample after setting time)."""
@@ -256,6 +316,96 @@ def _parse_frame_ranges(text):
     return ranges
 
 
+def _parse_speed_ranges(text):
+    """Parse frame ranges carrying an optional speed, e.g. "9-12, 30-33@12.5".
+
+    Returns a list of ``(start, end, speed)``.  ``speed`` is units of travel per
+    frame, or ``None`` when no ``@`` was given, meaning "hold whatever speed the
+    feet last produced" -- the common case, since the point of naming a flight
+    phase is usually to stop bad data from the airborne feet leaking in, not to
+    dictate a number.
+    """
+    ranges = []
+    for chunk in (text or "").split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        speed = None
+        if "@" in chunk:
+            chunk, speed_text = chunk.split("@", 1)
+            chunk = chunk.strip()
+            try:
+                speed = float(speed_text)
+            except ValueError:
+                raise ValueError(
+                    "Invalid speed '{0}' -- expected a number after "
+                    "'@'.".format(speed_text.strip()))
+            if speed < 0.0:
+                raise ValueError(
+                    "Speed must not be negative (got {0}). Direction comes "
+                    "from the feet; '@' only sets how fast.".format(speed))
+        try:
+            if "-" in chunk:
+                a, b = chunk.split("-", 1)
+                start, end = int(a), int(b)
+            else:
+                start = end = int(chunk)
+        except ValueError:
+            raise ValueError("Invalid frame range '{0}'".format(chunk))
+        if end < start:
+            start, end = end, start
+        ranges.append((start, end, speed))
+    return ranges
+
+
+def _expand_ranges(ranges):
+    """Flatten ``(start, end[, ...])`` tuples into a set of frame numbers."""
+    out = set()
+    for item in ranges or []:
+        start, end = item[0], item[1]
+        out.update(range(start, end + 1))
+    return out
+
+
+def _compact_ranges(frame_numbers):
+    """Collapse frame numbers into sorted inclusive ``(start, end)`` runs.
+
+    Used to turn a derived frame *set* back into ranges that read like what the
+    user would have typed, so the report is checkable against their intent.
+    """
+    runs = []
+    for f in sorted(frame_numbers):
+        if runs and f == runs[-1][1] + 1:
+            runs[-1][1] = f
+        else:
+            runs.append([f, f])
+    return [(a, b) for a, b in runs]
+
+
+def _format_ranges(ranges):
+    """Render ranges the same way the UI accepts them ("1-8, 20-27")."""
+    if not ranges:
+        return "(none)"
+    return ", ".join("{0}".format(a) if a == b else "{0}-{1}".format(a, b)
+                     for a, b in ranges)
+
+
+def _air_speed_map(frames, air_ranges):
+    """Map frame *index* -> forced speed (or ``None`` for "hold").
+
+    Keyed by index rather than frame number because that is what the
+    accumulation loop walks, and frames outside the converted range are dropped
+    here so a stale range left in the field cannot reach into the loop.
+    """
+    index_of = {f: i for i, f in enumerate(frames)}
+    out = {}
+    for start, end, speed in air_ranges or []:
+        for f in range(start, end + 1):
+            if f in index_of:
+                out[index_of[f]] = speed
+    return out
+
+
 def _sample_points(nodes, start, end):
     """Step through every frame and record each pin point's world matrix.
 
@@ -388,14 +538,8 @@ def _apply_pin_overrides(frames, weights, sides, pin_l_ranges, pin_r_ranges):
     never coasts.  Raises ValueError if a frame is pinned to both sides at once
     (ambiguous).
     """
-    def _expand(ranges):
-        s = set()
-        for start, end in ranges or []:
-            s.update(range(start, end + 1))
-        return s
-
-    l_frames = _expand(pin_l_ranges)
-    r_frames = _expand(pin_r_ranges)
+    l_frames = _expand_ranges(pin_l_ranges)
+    r_frames = _expand_ranges(pin_r_ranges)
     overlap = l_frames & r_frames
     if overlap:
         raise ValueError(
@@ -437,7 +581,20 @@ def _circular_blend(yaws, weights):
         sum(w * math.cos(y) for y, w in zip(yaws, weights)))
 
 
-def _accumulate_root_deltas(grounds, weights, lock_mode=None, lock_axis=0.0):
+def _rescale_step(dx, dz, speed):
+    """Set a step's length to ``speed``, keeping its direction.
+
+    A degenerate (zero-length) step carries no direction to keep, so there is
+    nothing to rescale -- returned untouched rather than inventing a heading.
+    """
+    mag = math.hypot(dx, dz)
+    if mag < _EPS:
+        return dx, dz
+    return dx / mag * speed, dz / mag * speed
+
+
+def _accumulate_root_deltas(grounds, weights, lock_mode=None, lock_axis=0.0,
+                            air_speeds=None):
     """Build the accumulated world-space root delta D(f) for every frame.
 
     Returns a list of MMatrix, one per frame, with D(0) = identity.  Frames with
@@ -465,32 +622,55 @@ def _accumulate_root_deltas(grounds, weights, lock_mode=None, lock_axis=0.0):
     by the heading built up so far (``T_f = t_f * R_{f-1} + T_{f-1}``).  So a
     step locked to local +X in a clip that turns to -32deg lands at 90-32 =
     58deg in world -- correct for "body", wrong for "straight world line".
+
+    ``air_speeds`` maps a frame *index* to a manual travel speed in units per
+    frame, or to ``None`` for "hold the incoming speed".  Those frames ignore
+    the feet entirely: during a run's flight phase there is no support foot, so
+    the contact blend is measuring swing legs and its answer is noise.  The
+    direction still comes from the last foot-derived step (the body does not
+    change course in mid-air), and only the length is replaced.  An air frame
+    deliberately does *not* update the "last good step", so a long flight phase
+    stays anchored to the speed the feet actually produced at toe-off instead of
+    drifting off its own output.
     """
     n = len(grounds[0])
     npts = len(grounds)
+    air = air_speeds or {}
     d = om.MMatrix()  # identity
     deltas = [om.MMatrix(d)]
     prev_step = None
 
+    def foot_step(i, w):
+        """Contact-weighted blend of every point's own pin delta at frame ``i``."""
+        yaws, dxs, dzs = [], [], []
+        for j in range(npts):
+            # each point's own pin delta: point(f)^-1 * point(f-1)
+            yaw, dx, dz = _delta_to_yaw_dxz(
+                grounds[j][i].inverse() * grounds[j][i - 1])
+            yaws.append(yaw)
+            dxs.append(dx)
+            dzs.append(dz)
+        return (_circular_blend(yaws, w),
+                sum(w[j] * dxs[j] for j in range(npts)),
+                sum(w[j] * dzs[j] for j in range(npts)))
+
     for i in range(1, n):
         w, confidence = weights[i]
+        forced = air.get(i, _MISSING)
 
-        if confidence < _CONTACT_FLOOR and prev_step is not None:
+        if forced is not _MISSING:
+            # Manually driven frame (typically a flight phase).  Direction from
+            # the last trustworthy step; if the clip *opens* mid-air there is no
+            # such step yet, so fall back to the feet for a direction only.
+            d_yaw, b_x, b_z = (prev_step if prev_step is not None
+                               else foot_step(i, w))
+            if forced is not None:
+                b_x, b_z = _rescale_step(b_x, b_z, forced)
+        elif confidence < _CONTACT_FLOOR and prev_step is not None:
             # Nothing is convincingly planted: coast on the last good step.
             d_yaw, b_x, b_z = prev_step
         else:
-            # each point's own pin delta: point(f)^-1 * point(f-1)
-            yaws, dxs, dzs = [], [], []
-            for j in range(npts):
-                yaw, dx, dz = _delta_to_yaw_dxz(
-                    grounds[j][i].inverse() * grounds[j][i - 1])
-                yaws.append(yaw)
-                dxs.append(dx)
-                dzs.append(dz)
-
-            d_yaw = _circular_blend(yaws, w)
-            b_x = sum(w[j] * dxs[j] for j in range(npts))
-            b_z = sum(w[j] * dzs[j] for j in range(npts))
+            d_yaw, b_x, b_z = foot_step(i, w)
             prev_step = (d_yaw, b_x, b_z)
 
         # Locking happens *after* the coast branch, so a coasted step is still
@@ -517,16 +697,23 @@ def _accumulate_root_deltas(grounds, weights, lock_mode=None, lock_axis=0.0):
 # diagnostics
 # ---------------------------------------------------------------------------
 
-def _coast_flags(weights):
+def _coast_flags(weights, air_speeds=None):
     """Per-frame "this frame reused the previous delta" flags.
 
     Mirrors the exact condition in ``_accumulate_root_deltas`` (including that
-    there is nothing to coast *on* until the first confidently-pinned frame),
-    so the report cannot disagree with what was actually baked.
+    there is nothing to coast *on* until the first confidently-pinned frame, and
+    that an air frame never becomes one to coast *from*), so the report cannot
+    disagree with what was actually baked.  Air frames are excluded here and
+    reported separately -- they reuse the previous direction too, but that is a
+    deliberate instruction rather than the tool giving up.
     """
+    air = air_speeds or {}
     flags = [False]
     prev_ok = False
     for i in range(1, len(weights)):
+        if i in air:
+            flags.append(False)
+            continue
         coast = weights[i][1] < _CONTACT_FLOOR and prev_ok
         flags.append(coast)
         if not coast:
@@ -534,7 +721,8 @@ def _coast_flags(weights):
     return flags
 
 
-def _report_pins(frames, nodes, sides, tiers, grounds, raw_ys, weights, deltas):
+def _report_pins(frames, nodes, sides, tiers, grounds, raw_ys, weights, deltas,
+                 air_speeds=None):
     """Print which pin point drives each frame, so a bad pick is visible.
 
     Two independent things go wrong in practice, and this report separates them:
@@ -548,10 +736,13 @@ def _report_pins(frames, nodes, sides, tiers, grounds, raw_ys, weights, deltas):
       foot is actually doing on that frame.  During toe-off the toe should lead;
       through mid-stance the ankle is fine.  ``*`` marks frames where nothing
       scored as planted at all, so the root just reused the previous delta --
-      a run of those is what shows up as a dense cluster of root keys.
+      a run of those is what shows up as a dense cluster of root keys.  ``~``
+      marks a manually driven air frame, where reusing the direction was asked
+      for rather than a fallback.
     """
     npts = len(nodes)
     n = len(frames)
+    air = air_speeds or {}
 
     # Same-side ankle for each point, to report a meaningful separation.
     ankle_of = {}
@@ -583,22 +774,24 @@ def _report_pins(frames, nodes, sides, tiers, grounds, raw_ys, weights, deltas):
         tier_min[tier] = min(y for j in range(npts) if tiers[j] == tier
                              for y in raw_ys[j])
 
-    coast = _coast_flags(weights)
+    coast = _coast_flags(weights, air_speeds)
 
     print("")
     print("[pins] per-frame decision  ('*' = nothing planted, reused previous "
-          "delta):")
+          "delta; '~' = manual air frame):")
     print("  frame  leader        weight   conf  height   hspd   vspd"
           "  | travelX   travelZ  headY")
     led = [0] * npts
     for i in range(n):
         w, conf = weights[i]
         j = max(range(npts), key=lambda k: w[k])
-        led[j] += 1
+        if i not in air:
+            led[j] += 1
         d = deltas[i]
+        mark = "~" if i in air else ("*" if coast[i] else " ")
         print("  {0:>5}{1} [{2}] {3} {4:<5} {5:>6.3f} {6:>6.3f} {7:>7.3f} "
               "{8:>6.3f} {9:>6.3f} | {10:>8.3f} {11:>9.3f} {12:>6.1f}".format(
-                  frames[i], "*" if coast[i] else " ", j, sides[j], tiers[j],
+                  frames[i], mark, j, sides[j], tiers[j],
                   w[j], conf, raw_ys[j][i] - tier_min[tiers[j]],
                   speeds[j][i], vspeeds[j][i],
                   d[12], d[14], math.degrees(_yaw_from_matrix(d))))
@@ -610,6 +803,11 @@ def _report_pins(frames, nodes, sides, tiers, grounds, raw_ys, weights, deltas):
     print("[pins] reused-previous-delta frames: {0} of {1} "
           "(confidence below the {2} contact floor)".format(
               sum(coast), n - 1, _CONTACT_FLOOR))
+    if air:
+        held = sum(1 for v in air.values() if v is None)
+        print("[pins] manual air frames: {0} ({1} holding the incoming speed, "
+              "{2} at a dictated speed)".format(len(air), held,
+                                                len(air) - held))
 
 
 # ---------------------------------------------------------------------------
@@ -659,8 +857,8 @@ def _apply_root(root, frames, deltas, clear_existing=True):
 
 def convert(root, foot_l, foot_r, start=None, end=None, clear_existing=True,
             sharpness=_CONTACT_SHARPNESS, lock_mode=None, lock_axis=0.0,
-            pin_l_ranges=None, pin_r_ranges=None,
-            use_toes=True, toe_l=None, toe_r=None):
+            pin_l_ranges=None, pin_r_ranges=None, derive_pin_r=False,
+            air_ranges=None, use_toes=True, toe_l=None, toe_r=None):
     """Synthesise root motion for an in-place cycle and key it onto ``root``.
 
     Parameters
@@ -698,6 +896,22 @@ def convert(root, foot_l, foot_r, start=None, end=None, clear_existing=True,
         this when the automatic heuristic picks the wrong foot over some
         stretch of the clip. A frame may not appear in both -- that is
         ambiguous and raises ``ValueError``.
+    derive_pin_r : bool
+        Compute ``pin_r_ranges`` as "every frame ``pin_l_ranges`` and
+        ``air_ranges`` did not claim", instead of listing them. Saves typing
+        on a fully annotated cycle, where left stance + flight + right stance
+        genuinely partition the clip. **It is all-or-nothing**: any frame you
+        forgot to annotate becomes right-foot-pinned, so annotate the whole
+        range or leave this off. The derived ranges are printed so you can
+        check them against what you meant. Requires ``pin_l_ranges``, and
+        overrides any explicit ``pin_r_ranges``.
+    air_ranges : list of (start, end, speed) or None
+        Frame ranges (inclusive) with no support foot -- a run's flight
+        phase. ``speed`` is units of travel per frame, or ``None`` to hold
+        whatever speed the feet last produced. These frames ignore the
+        contact blend entirely (mid-air it is measuring swing legs, so its
+        answer is noise) and keep travelling in the last foot-derived
+        direction. A frame may not be both air and pinned.
     use_toes : bool
         Also track each foot's toe / ball joint as a pin candidate. This
         matters at the foot switch: during toe-off the ankle is lifting and
@@ -709,9 +923,9 @@ def convert(root, foot_l, foot_r, start=None, end=None, clear_existing=True,
         ``_find_toe`` -- the furthest joint child of each foot. Only used
         when ``use_toes`` is true.
     """
-    for n in (root, foot_l, foot_r):
-        if not cmds.objExists(n):
-            raise ValueError("Node does not exist: '{0}'".format(n))
+    root = _resolve_node(root)
+    foot_l = _resolve_node(foot_l)
+    foot_r = _resolve_node(foot_r)
 
     # Pin points: each foot's ankle, plus optionally its toe. Tiers keep the
     # contact height gate honest (ankles sit higher than toes); sides let the
@@ -723,7 +937,7 @@ def convert(root, foot_l, foot_r, start=None, end=None, clear_existing=True,
     if use_toes:
         for foot, explicit, side in ((foot_l, toe_l, "L"), (foot_r, toe_r, "R")):
             if explicit:
-                toe = explicit
+                toe = _resolve_node(explicit)
                 print("[pin_points] {0} toe set explicitly to '{1}'".format(
                     side, toe))
             else:
@@ -747,8 +961,6 @@ def convert(root, foot_l, foot_r, start=None, end=None, clear_existing=True,
                     "for that side. Root motion may stall at toe-off.".format(
                         foot))
                 continue
-            if not cmds.objExists(toe):
-                raise ValueError("Node does not exist: '{0}'".format(toe))
             nodes.append(toe)
             sides.append(side)
             tiers.append("toe")
@@ -774,21 +986,61 @@ def convert(root, foot_l, foot_r, start=None, end=None, clear_existing=True,
                     root, attr, start))
             break
 
+    if lock_mode not in (None, "body", "world"):
+        raise ValueError(
+            "lock_mode must be None, 'body' or 'world', not {0!r}".format(
+                lock_mode))
+
+    # Air frames are settled *before* the pin ranges, because deriving the right
+    # side depends on knowing which frames the air already claimed.
+    air_frames = _expand_ranges(air_ranges)
+    clash = air_frames & _expand_ranges(pin_l_ranges)
+    if clash:
+        raise ValueError(
+            "Frame(s) {0} are both pinned to the left foot and marked as "
+            "airborne -- a foot cannot be planted and off the ground at "
+            "once.".format(sorted(clash)))
+
+    if derive_pin_r:
+        if not pin_l_ranges:
+            raise ValueError(
+                "Deriving the right foot's frames needs the left foot's "
+                "ranges to subtract from -- otherwise every frame in the clip "
+                "would be pinned to the right foot.")
+        if pin_r_ranges:
+            cmds.warning(
+                "Right-foot ranges are being derived; the explicit ones are "
+                "ignored.")
+        pin_r_ranges = _compact_ranges(
+            set(range(start, end + 1)) - _expand_ranges(pin_l_ranges)
+            - air_frames)
+        print("[pins] right foot derived as everything left/air did not "
+              "claim: {0}".format(_format_ranges(pin_r_ranges)))
+        print("[pins] check that against your intent -- any frame you did not "
+              "annotate is now right-foot-pinned.")
+    else:
+        clash = air_frames & _expand_ranges(pin_r_ranges)
+        if clash:
+            raise ValueError(
+                "Frame(s) {0} are both pinned to the right foot and marked as "
+                "airborne -- a foot cannot be planted and off the ground at "
+                "once.".format(sorted(clash)))
+
     frames, grounds, raw_ys = _sample_points(nodes, start, end)
     weights = _contact_weights(grounds, raw_ys, tiers, sharpness=sharpness)
     if pin_l_ranges or pin_r_ranges:
         weights = _apply_pin_overrides(frames, weights, sides,
                                        pin_l_ranges, pin_r_ranges)
-    if lock_mode not in (None, "body", "world"):
-        raise ValueError(
-            "lock_mode must be None, 'body' or 'world', not {0!r}".format(
-                lock_mode))
+    air_speeds = _air_speed_map(frames, air_ranges)
+
     print("[axis_lock] mode={0} axis={1}".format(
         lock_mode or "free", lock_axis if lock_mode else "n/a"))
 
     deltas = _accumulate_root_deltas(grounds, weights, lock_mode=lock_mode,
-                                     lock_axis=lock_axis)
-    _report_pins(frames, nodes, sides, tiers, grounds, raw_ys, weights, deltas)
+                                     lock_axis=lock_axis,
+                                     air_speeds=air_speeds)
+    _report_pins(frames, nodes, sides, tiers, grounds, raw_ys, weights, deltas,
+                 air_speeds=air_speeds)
     _apply_root(root, frames, deltas, clear_existing=clear_existing)
 
     total = list(deltas[-1])
@@ -814,6 +1066,29 @@ def _set_from_selection(field):
         cmds.warning("Nothing selected.")
         return
     cmds.textField(_FIELDS[field], edit=True, text=sel[0])
+
+
+def _default_name(key):
+    """Pre-fill text for a node field: saved optionVar, else ``_DEFAULT_NODES``."""
+    var = _OPTVAR_PREFIX + key
+    if cmds.optionVar(exists=var):
+        return cmds.optionVar(q=var)
+    return _DEFAULT_NODES.get(key, "")
+
+
+def _on_save_defaults(*_):
+    """Remember the current node names as the pre-fill for future sessions."""
+    saved = []
+    for key in _DEFAULT_NODES:
+        text = cmds.textField(_FIELDS[key], q=True, text=True).strip()
+        cmds.optionVar(stringValue=(_OPTVAR_PREFIX + key, text))
+        if text:
+            saved.append("{0}={1}".format(key, text))
+    print("[nodes] saved as default: {0}".format(
+        ", ".join(saved) if saved else "(all blank)"))
+    cmds.inViewMessage(
+        amg="Node names saved -- they will pre-fill next time.",
+        pos="midCenter", fade=True)
 
 
 _LOCK_MODE_ITEMS = ("Free -- curve wherever the feet say",
@@ -860,6 +1135,11 @@ def _toggle_toes(value):
         cmds.textField(_FIELDS[key], edit=True, enable=value)
 
 
+def _toggle_pin_r(value):
+    """Grey out the right-foot field while its frames are being derived."""
+    cmds.textField(_FIELDS["pin_r"], edit=True, enable=not value)
+
+
 def _on_delete_baked(*_):
     root = cmds.textField(_FIELDS["root"], q=True, text=True).strip()
     if not root:
@@ -884,6 +1164,7 @@ def _on_convert(*_):
     use_toes = cmds.checkBox(_FIELDS["use_toes"], q=True, value=True)
     toe_l = cmds.textField(_FIELDS["toe_l"], q=True, text=True).strip() or None
     toe_r = cmds.textField(_FIELDS["toe_r"], q=True, text=True).strip() or None
+    derive_pin_r = cmds.checkBox(_FIELDS["derive_pin_r"], q=True, value=True)
     lock_mode, lock_axis = _resolve_lock()
 
     start = end = None
@@ -898,6 +1179,8 @@ def _on_convert(*_):
     try:
         pin_l_ranges = _parse_frame_ranges(cmds.textField(_FIELDS["pin_l"], q=True, text=True))
         pin_r_ranges = _parse_frame_ranges(cmds.textField(_FIELDS["pin_r"], q=True, text=True))
+        air_ranges = _parse_speed_ranges(
+            cmds.textField(_FIELDS["air"], q=True, text=True))
     except ValueError as exc:
         cmds.confirmDialog(title="Invalid frame range", message=str(exc), button=["OK"])
         return
@@ -906,6 +1189,7 @@ def _on_convert(*_):
         convert(root, foot_l, foot_r, start=start, end=end, clear_existing=clear,
                 sharpness=sharpness, lock_mode=lock_mode, lock_axis=lock_axis,
                 pin_l_ranges=pin_l_ranges, pin_r_ranges=pin_r_ranges,
+                derive_pin_r=derive_pin_r, air_ranges=air_ranges,
                 use_toes=use_toes, toe_l=toe_l, toe_r=toe_r)
     except Exception as exc:  # surface the error to the user, not just the log
         cmds.confirmDialog(title="Convert failed", message=str(exc), button=["OK"])
@@ -916,7 +1200,8 @@ def _node_row(label, key, annotation=""):
     cmds.rowLayout(numberOfColumns=3, columnWidth3=(70, 200, 90),
                    adjustableColumn=2, columnAlign=(1, "right"))
     cmds.text(label=label)
-    _FIELDS[key] = cmds.textField(annotation=annotation)
+    _FIELDS[key] = cmds.textField(text=_default_name(key),
+                                  annotation=annotation)
     cmds.button(label="<- Sel", command=lambda *_: _set_from_selection(key))
     cmds.setParent("..")
 
@@ -926,7 +1211,7 @@ def show_ui():
     if cmds.window(_WIN, exists=True):
         cmds.deleteUI(_WIN)
 
-    cmds.window(_WIN, title="In-Place -> Root Motion", widthHeight=(380, 470),
+    cmds.window(_WIN, title="In-Place -> Root Motion", widthHeight=(380, 620),
                 sizeable=True)
     cmds.columnLayout(adjustableColumn=True, rowSpacing=6,
                       columnOffset=("both", 8))
@@ -938,6 +1223,16 @@ def show_ui():
     _node_row("Root:", "root")
     _node_row("Left foot:", "foot_l")
     _node_row("Right foot:", "foot_r")
+
+    cmds.separator(style="in", height=8)
+
+    cmds.button(label="Save names as default", height=22,
+                command=_on_save_defaults,
+                annotation="Remember the five node names (root, feet, toes) so "
+                           "they pre-fill every time you open this window. "
+                           "Stored in Maya's optionVars, so it survives a "
+                           "restart. Names are matched even if the rig is "
+                           "referenced under a namespace.")
 
     cmds.separator(style="in", height=8)
 
@@ -1029,10 +1324,35 @@ def show_ui():
 
     cmds.rowLayout(numberOfColumns=2, columnWidth2=(160, 220),
                    columnAlign=(1, "right"))
+    cmds.text(label="Airborne frames:")
+    _FIELDS["air"] = cmds.textField(
+        annotation="Frames with no support foot -- a run's flight phase. "
+                   "Same syntax as the pin fields, plus an optional speed: "
+                   "\"9-12\" holds whatever speed the feet last produced, "
+                   "\"9-12@12.5\" travels 12.5 units per frame instead. "
+                   "Direction always comes from the last foot-derived step, "
+                   "since the body cannot change course in mid-air. These "
+                   "frames ignore contact detection entirely -- mid-air it is "
+                   "only measuring swing legs.")
+    cmds.setParent("..")
+
+    _FIELDS["derive_pin_r"] = cmds.checkBox(
+        label="Derive right foot from the leftovers", value=False,
+        changeCommand=_toggle_pin_r,
+        annotation="Right foot = every frame the left-foot and airborne "
+                   "fields did not claim, so you only annotate the clip once. "
+                   "All-or-nothing: any frame you forgot becomes "
+                   "right-foot-pinned, so annotate the whole range or leave "
+                   "this off. The derived ranges are printed to the Script "
+                   "Editor so you can check them.")
+
+    cmds.rowLayout(numberOfColumns=2, columnWidth2=(160, 220),
+                   columnAlign=(1, "right"))
     cmds.text(label="Right foot pinned frames:")
     _FIELDS["pin_r"] = cmds.textField(
         annotation="Comma-separated frame ranges for the right foot. A "
-                   "frame cannot be pinned to both feet.")
+                   "frame cannot be pinned to both feet. Ignored when the "
+                   "derive checkbox above is on.")
     cmds.setParent("..")
 
     _FIELDS["clear"] = cmds.checkBox(

@@ -1,13 +1,14 @@
 import maya.cmds as cmds
 
-def normalize_skeleton_with_animation(root_bone=None, target_scale=1.0):
+def normalize_skeleton_with_animation(root_bone=None, target_scale=1.0, bone_radius=3.0):
     """
     Normalize root bone scale from 100 to 1 while preserving all animations
     Works on skeletons without skinned meshes
-    
+
     Args:
         root_bone (str): Name of the root bone. If None, will try to find it automatically
         target_scale (float): Target scale value (default: 1.0)
+        bone_radius (float): Joint display radius applied after normalizing (default: 3.0)
     """
     
     # Find root bone
@@ -40,8 +41,16 @@ def normalize_skeleton_with_animation(root_bone=None, target_scale=1.0):
     
     if abs(current_scale - target_scale) < 0.001:
         print(f"Root bone is already at scale {target_scale}")
+        # Still enforce the uniform joint radius
+        children = cmds.listRelatives(root_bone, allDescendents=True, type='transform') or []
+        for joint in [root_bone] + [c for c in children if cmds.nodeType(c) == 'joint']:
+            try:
+                cmds.setAttr(f"{joint}.radius", bone_radius)
+            except:
+                pass
+        print(f"Set radius to {bone_radius} on all joints")
         return
-    
+
     # Calculate scale factor
     scale_factor = current_scale / target_scale
     
@@ -123,21 +132,24 @@ def normalize_skeleton_with_animation(root_bone=None, target_scale=1.0):
                 cmds.setAttr(f"{child}.translateY", ty * scale_factor)
                 cmds.setAttr(f"{child}.translateZ", tz * scale_factor)
             
-            # Scale joint radius for visual consistency
-            try:
-                radius = cmds.getAttr(f"{child}.radius")
-                cmds.setAttr(f"{child}.radius", radius * scale_factor)
-            except:
-                pass
-            
             joints_scaled += 1
-    
+
     # Restore original time
     cmds.currentTime(current_time)
-    
+
+    # Set a uniform joint display radius after normalizing
+    radius_set = 0
+    for joint in all_joints:
+        try:
+            cmds.setAttr(f"{joint}.radius", bone_radius)
+            radius_set += 1
+        except:
+            pass
+
     print(f"\n=== Summary ===")
     print(f"- Normalized root bone to scale {target_scale}")
     print(f"- Scaled {joints_scaled} child joints")
+    print(f"- Set radius to {bone_radius} on {radius_set} joints")
     print(f"- Scale factor applied: {scale_factor}")
     if has_animation:
         print("- Animation keyframes preserved and scaled")
