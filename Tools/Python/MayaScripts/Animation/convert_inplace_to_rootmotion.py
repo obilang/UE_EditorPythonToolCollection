@@ -28,9 +28,9 @@ Plugging the pin condition in for the foot gives the recurrence::
     =>  D(f) =        delta(f)        * D(f-1) ,   D(0) = I
 
 Each foot matrix is first projected to a ground-plane rigid motion -- horizontal
-translation (Y is up) plus yaw only -- so the accumulated motion is a clean
-SE(2) trajectory: forward translation *and* turning, with no vertical bob or
-pitch/roll leaking into the root.
+translation plus yaw about the scene's up axis only -- so the accumulated motion
+is a clean SE(2) trajectory: forward translation *and* turning, with no vertical
+bob or pitch/roll leaking into the root.
 
 Several *pin points* are tracked -- both ankles, plus (by default) both toe /
 ball joints.  Per frame we compute each point's own delta, then blend them by a
@@ -61,7 +61,9 @@ rides forward with it and the feet stop sliding.
 
 Assumptions (chosen for the current walk/run in-place cycles)
 ------------------------------------------------------------
-* Y-up scene (ground = XZ plane).
+* Either Maya up axis: the ground plane and the yaw axis are taken from
+  ``cmds.upAxis`` (Y-up -> ground XZ, yaw about Y, forward = +Z; Z-up ->
+  ground XY, yaw about Z, forward = +Y).
 * A dedicated, currently-static root joint that is an ancestor of the feet.
 * Translation + yaw are synthesised; pitch / roll / vertical of the root are
   left untouched.
@@ -125,6 +127,48 @@ _EPS = 1e-8
 # Sentinel distinguishing "no entry for this frame" from a stored ``None``
 # (which is a meaningful value: "hold the incoming speed").
 _MISSING = object()
+
+
+# ---------------------------------------------------------------------------
+# up axis
+# ---------------------------------------------------------------------------
+
+# Every ground-plane computation below is written in terms of three world-axis
+# *indices* rather than naming Y or Z, so one body of code serves a Y-up and a
+# Z-up scene.  ``fwd`` is the axis a yaw of 0 points along, ``side`` is the axis
+# 90deg from it (X under both conventions), and ``up`` carries contact heights
+# and the yaw rotation.  Yaw keeps the same meaning in both: 0 = forward,
+# +90deg = towards +X.
+_AXES = {
+    "y": (0, 2, 1),     # ground = XZ, yaw about Y, forward = +Z
+    "z": (0, 1, 2),     # ground = XY, yaw about Z, forward = +Y
+}
+_SIDE, _FWD, _UP = _AXES["z"]
+
+# Which local axis of a *joint* is treated as pointing along the foot -- row 2
+# is the joint's local +Z under Maya's row-vector convention, which is the
+# feet's forward on the rigs this was written for.  Converting a scene to Z-up
+# rotates the whole rig, so a joint's local axes still sit the same way relative
+# to the body and this stays row 2.  If a rig runs its feet down local +X
+# instead, every reported yaw is 90deg out -- set this to 0.
+_NODE_FWD_ROW = 2
+
+
+def _sync_up_axis():
+    """Aim the ground-plane math at the scene's current up axis.
+
+    Called at the top of ``convert`` rather than at import time, because the up
+    axis belongs to the scene and a session can open several.
+    """
+    global _SIDE, _FWD, _UP
+    up = (cmds.upAxis(q=True, axis=True) or "y").lower()
+    if up not in _AXES:
+        cmds.warning(
+            "Unrecognised scene up axis '{0}'; assuming Y-up.".format(up))
+        up = "y"
+    _SIDE, _FWD, _UP = _AXES[up]
+    print("[up_axis] scene is {0}-up: ground plane = {1}{2}, forward = +{2}, "
+          "yaw about {3}".format(up, "XYZ"[_SIDE], "XYZ"[_FWD], "XYZ"[_UP]))
 
 
 # ---------------------------------------------------------------------------
@@ -198,8 +242,8 @@ def _toe_candidates(foot):
     scored = []
     for child in children:
         m = _world_matrix(child)
-        scored.append(
-            (child, math.hypot(m[12] - origin[12], m[14] - origin[14])))
+        scored.append((child, math.hypot(m[12 + _SIDE] - origin[12 + _SIDE],
+                                         m[12 + _FWD] - origin[12 + _FWD])))
     scored.sort(key=lambda cd: -cd[1])
     return scored
 
@@ -210,39 +254,59 @@ def _find_toe(foot):
     return scored[0][0] if scored else None
 
 
-def _yaw_from_matrix(m):
-    """Extract the Y (yaw) Euler angle, in radians, from world matrix ``m``.
+def _node_yaw(m):
+    """Ground-plane heading, in radians, of a *joint's* world matrix ``m``.
 
-    Uses the matrix's local +Z axis projected onto the ground plane, which is
-    robust to whatever pitch/roll the foot carries during the stride.
+    Read off the joint's local forward axis (``_NODE_FWD_ROW``) projected onto
+    the ground plane, which is robust to whatever pitch/roll the foot carries
+    during the stride.  0 = the world forward axis, +90deg = towards +X.
     """
-    # row 2 (indices 8,9,10) is the node's world +Z axis under row-vector convention
-    zx = m[8]
-    zz = m[10]
-    return math.atan2(zx, zz)
+    row = 4 * _NODE_FWD_ROW
+    return math.atan2(m[row + _SIDE], m[row + _FWD])
 
 
-def _ground_matrix(yaw, x, z):
-    """Build a clean ground-plane SE(2) matrix: yaw about Y, translate in XZ."""
+def _ground_yaw(m):
+    """Heading, in radians, of a ground-plane matrix built by ``_ground_matrix``.
+
+    Separate from ``_node_yaw`` because the two read different rows: a ground
+    matrix is a pure rotation about the *up* axis, so its heading lives on the
+    row of the world forward axis, while a joint's heading lives on whichever
+    local axis runs along its foot.  Under Y-up those rows happen to coincide
+    (both row 2); under Z-up they do not.
+    """
+    row = 4 * _FWD
+    return math.atan2(m[row + _SIDE], m[row + _FWD])
+
+
+def _ground_matrix(yaw, side, fwd):
+    """Build a clean ground-plane SE(2) matrix: yaw about up, translate in-plane.
+
+    ``side`` / ``fwd`` are the translation's components along the two ground
+    axes.  The rotation block is the same ``[[c, -s], [s, c]]`` in (side, fwd)
+    order under both up-axis conventions, which is what lets ``_rotate_ground``
+    stay axis-agnostic.
+    """
     c = math.cos(yaw)
     s = math.sin(yaw)
-    # rotateY then translate, row-vector layout
-    return om.MMatrix([
-        c,    0.0, -s,   0.0,
-        0.0,  1.0,  0.0, 0.0,
-        s,    0.0,  c,   0.0,
-        x,    0.0,  z,   1.0,
-    ])
+    m = [0.0] * 16
+    m[_SIDE * 4 + _SIDE] = c
+    m[_SIDE * 4 + _FWD] = -s
+    m[_FWD * 4 + _SIDE] = s
+    m[_FWD * 4 + _FWD] = c
+    m[_UP * 4 + _UP] = 1.0
+    m[12 + _SIDE] = side
+    m[12 + _FWD] = fwd
+    m[15] = 1.0
+    return om.MMatrix(m)
 
 
-def _delta_to_yaw_dxz(delta):
-    """Decompose a small SE(2) delta matrix into (d_yaw, dx, dz) for blending."""
-    d_yaw = _yaw_from_matrix(delta)
-    return d_yaw, delta[12], delta[14]
+def _delta_to_yaw_step(delta):
+    """Decompose an SE(2) delta into (d_yaw, d_side, d_fwd) for blending."""
+    return _ground_yaw(delta), delta[12 + _SIDE], delta[12 + _FWD]
 
 
-def _rotate_xz(x, z, yaw):
-    """Rotate a ground-plane vector by ``yaw`` radians about Y.
+def _rotate_ground(side, fwd, yaw):
+    """Rotate a ground-plane vector by ``yaw`` radians about the up axis.
 
     Matches ``_ground_matrix`` exactly (row-vector convention), so this is the
     same transform the accumulation applies when it turns a *local* travel step
@@ -250,15 +314,14 @@ def _rotate_xz(x, z, yaw):
     """
     c = math.cos(yaw)
     s = math.sin(yaw)
-    return x * c + z * s, -x * s + z * c
+    return side * c + fwd * s, -side * s + fwd * c
 
 
-def _redirect_onto_axis(dx, dz, axis_deg):
+def _redirect_onto_axis(d_side, d_fwd, axis_deg):
     """Aim a travel step along ``axis_deg`` while keeping its length.
 
-    Uses the same convention as ``_yaw_from_matrix`` (0deg = +Z / forward,
-    90deg = +X / side), so a locked axis lines up with the yaw the tool
-    already reports.
+    Uses the same convention as the tool's yaw (0deg = forward, 90deg = +X /
+    side), so a locked axis lines up with the yaw the tool already reports.
 
     Note this *redirects* rather than projects.  A projection scales the step
     by the cosine of its angle to the axis, so it shrinks the travel as the
@@ -269,10 +332,10 @@ def _redirect_onto_axis(dx, dz, axis_deg):
     backwards along the axis keeps heading backwards.
     """
     rad = math.radians(axis_deg)
-    ux, uz = math.sin(rad), math.cos(rad)
-    mag = math.hypot(dx, dz)
-    sign = 1.0 if (dx * ux + dz * uz) >= 0.0 else -1.0
-    return sign * mag * ux, sign * mag * uz
+    u_side, u_fwd = math.sin(rad), math.cos(rad)
+    mag = math.hypot(d_side, d_fwd)
+    sign = 1.0 if (d_side * u_side + d_fwd * u_fwd) >= 0.0 else -1.0
+    return sign * mag * u_side, sign * mag * u_fwd
 
 
 # ---------------------------------------------------------------------------
@@ -406,30 +469,56 @@ def _air_speed_map(frames, air_ranges):
     return out
 
 
+def _warn_if_vertical_forward(node, m):
+    """Warn when a pin point's assumed forward axis is nearly vertical.
+
+    Yaw is read off that axis projected onto the ground plane, so an axis that
+    actually points along *up* projects to almost nothing and the heading it
+    reports is noise.  That is exactly what a wrong ``_NODE_FWD_ROW`` looks
+    like -- worth catching here, because the resulting root motion looks
+    plausibly wrong rather than obviously broken.
+    """
+    row = 4 * _NODE_FWD_ROW
+    length = math.sqrt(m[row] ** 2 + m[row + 1] ** 2 + m[row + 2] ** 2)
+    if length < _EPS:
+        return
+    flat = math.hypot(m[row + _SIDE], m[row + _FWD]) / length
+    if flat < 0.25:     # more than ~75deg out of the ground plane
+        cmds.warning(
+            "'{0}': its local {1} axis is nearly vertical ({2:.0f}deg out of "
+            "the ground plane), so the yaw read from it is unreliable. If the "
+            "root's rotation comes out wrong, set _NODE_FWD_ROW to the axis "
+            "that runs along the foot.".format(
+                node.split("|")[-1], "XYZ"[_NODE_FWD_ROW],
+                math.degrees(math.acos(min(flat, 1.0)))))
+
+
 def _sample_points(nodes, start, end):
     """Step through every frame and record each pin point's world matrix.
 
-    Returns ``frames, grounds, raw_ys`` where ``grounds[j]`` is point ``j``'s
-    per-frame list of clean SE(2) matrices and ``raw_ys[j]`` its per-frame
-    un-projected world Y (used for contact height).
+    Returns ``frames, grounds, heights`` where ``grounds[j]`` is point ``j``'s
+    per-frame list of clean SE(2) matrices and ``heights[j]`` its per-frame
+    un-projected world height along the up axis (used for contact detection).
     """
     frames = list(range(start, end + 1))
     grounds = [[] for _ in nodes]
-    raw_ys = [[] for _ in nodes]
+    heights = [[] for _ in nodes]
 
     restore_time = cmds.currentTime(q=True)
     try:
-        for f in frames:
+        for idx, f in enumerate(frames):
             cmds.currentTime(f, edit=True)
             for j, node in enumerate(nodes):
                 m = _world_matrix(node)
-                grounds[j].append(
-                    _ground_matrix(_yaw_from_matrix(m), m[12], m[14]))
-                raw_ys[j].append(m[13])
+                if idx == 0:
+                    _warn_if_vertical_forward(node, m)
+                grounds[j].append(_ground_matrix(
+                    _node_yaw(m), m[12 + _SIDE], m[12 + _FWD]))
+                heights[j].append(m[12 + _UP])
     finally:
         cmds.currentTime(restore_time, edit=True)
 
-    return frames, grounds, raw_ys
+    return frames, grounds, heights
 
 
 # ---------------------------------------------------------------------------
@@ -445,23 +534,23 @@ def _horizontal_speed(ground_seq, i):
     hi = min(i + 1, n - 1)
     a, b = ground_seq[lo], ground_seq[hi]
     span = max(hi - lo, 1)
-    dx = (b[12] - a[12]) / span
-    dz = (b[14] - a[14]) / span
-    return math.hypot(dx, dz)
+    d_side = (b[12 + _SIDE] - a[12 + _SIDE]) / span
+    d_fwd = (b[12 + _FWD] - a[12 + _FWD]) / span
+    return math.hypot(d_side, d_fwd)
 
 
-def _vertical_speed(y_seq, i):
+def _vertical_speed(h_seq, i):
     """Per-frame absolute vertical foot motion at index ``i`` (centered)."""
-    n = len(y_seq)
+    n = len(h_seq)
     if n < 2:
         return 0.0
     lo = max(i - 1, 0)
     hi = min(i + 1, n - 1)
     span = max(hi - lo, 1)
-    return abs((y_seq[hi] - y_seq[lo]) / span)
+    return abs((h_seq[hi] - h_seq[lo]) / span)
 
 
-def _contact_weights(grounds, raw_ys, tiers, sharpness=_CONTACT_SHARPNESS):
+def _contact_weights(grounds, heights, tiers, sharpness=_CONTACT_SHARPNESS):
     """Soft per-frame planted-ness weights across N pin points.
 
     Returns a list of ``(weights, confidence)`` per frame, where ``weights`` is
@@ -485,7 +574,7 @@ def _contact_weights(grounds, raw_ys, tiers, sharpness=_CONTACT_SHARPNESS):
 
     speeds = [[_horizontal_speed(grounds[j], i) for i in range(n)]
               for j in range(npts)]
-    vspeeds = [[_vertical_speed(raw_ys[j], i) for i in range(n)]
+    vspeeds = [[_vertical_speed(heights[j], i) for i in range(n)]
                for j in range(npts)]
 
     speed_ref = max(max(max(s) for s in speeds), _EPS)
@@ -496,14 +585,15 @@ def _contact_weights(grounds, raw_ys, tiers, sharpness=_CONTACT_SHARPNESS):
     # Per-tier ground reference + height softness scale.
     tier_ref = {}
     for tier in set(tiers):
-        tier_y = [y for j in range(npts) if tiers[j] == tier for y in raw_ys[j]]
-        y_min = min(tier_y)
-        y_span = max(max(tier_y) - y_min, _EPS)
-        tier_ref[tier] = (y_min, max(y_span * _HEIGHT_SOFTNESS, _EPS))
+        tier_h = [h for j in range(npts) if tiers[j] == tier
+                  for h in heights[j]]
+        h_min = min(tier_h)
+        h_span = max(max(tier_h) - h_min, _EPS)
+        tier_ref[tier] = (h_min, max(h_span * _HEIGHT_SOFTNESS, _EPS))
 
-    def planted(tier, raw_y_i, spd, vspd):
-        y_min, h_scale = tier_ref[tier]
-        h = raw_y_i - y_min
+    def planted(tier, height_i, spd, vspd):
+        h_min, h_scale = tier_ref[tier]
+        h = height_i - h_min
         # low (for its own kind) + horizontally slow + vertically still
         return (math.exp(-h / h_scale)
                 * math.exp(-spd / s_scale)
@@ -511,7 +601,7 @@ def _contact_weights(grounds, raw_ys, tiers, sharpness=_CONTACT_SHARPNESS):
 
     weights = []
     for i in range(n):
-        w = [planted(tiers[j], raw_ys[j][i], speeds[j][i], vspeeds[j][i])
+        w = [planted(tiers[j], heights[j][i], speeds[j][i], vspeeds[j][i])
              for j in range(npts)]
         confidence = max(w)             # how planted the *best* point is
         total = sum(w)
@@ -581,16 +671,16 @@ def _circular_blend(yaws, weights):
         sum(w * math.cos(y) for y, w in zip(yaws, weights)))
 
 
-def _rescale_step(dx, dz, speed):
+def _rescale_step(d_side, d_fwd, speed):
     """Set a step's length to ``speed``, keeping its direction.
 
     A degenerate (zero-length) step carries no direction to keep, so there is
     nothing to rescale -- returned untouched rather than inventing a heading.
     """
-    mag = math.hypot(dx, dz)
+    mag = math.hypot(d_side, d_fwd)
     if mag < _EPS:
-        return dx, dz
-    return dx / mag * speed, dz / mag * speed
+        return d_side, d_fwd
+    return d_side / mag * speed, d_fwd / mag * speed
 
 
 def _accumulate_root_deltas(grounds, weights, lock_mode=None, lock_axis=0.0,
@@ -615,8 +705,8 @@ def _accumulate_root_deltas(grounds, weights, lock_mode=None, lock_axis=0.0,
                   space, so the path is a straight world line no matter how
                   the body turns.
 
-    ``lock_axis`` is degrees in the usual convention (0 = forward / +Z,
-    90 = side / +X).
+    ``lock_axis`` is degrees in the usual convention (0 = the world forward
+    axis, 90 = side / +X).
 
     The distinction matters because the accumulation rotates each *local* step
     by the heading built up so far (``T_f = t_f * R_{f-1} + T_{f-1}``).  So a
@@ -642,17 +732,17 @@ def _accumulate_root_deltas(grounds, weights, lock_mode=None, lock_axis=0.0,
 
     def foot_step(i, w):
         """Contact-weighted blend of every point's own pin delta at frame ``i``."""
-        yaws, dxs, dzs = [], [], []
+        yaws, sides, fwds = [], [], []
         for j in range(npts):
             # each point's own pin delta: point(f)^-1 * point(f-1)
-            yaw, dx, dz = _delta_to_yaw_dxz(
+            yaw, d_side, d_fwd = _delta_to_yaw_step(
                 grounds[j][i].inverse() * grounds[j][i - 1])
             yaws.append(yaw)
-            dxs.append(dx)
-            dzs.append(dz)
+            sides.append(d_side)
+            fwds.append(d_fwd)
         return (_circular_blend(yaws, w),
-                sum(w[j] * dxs[j] for j in range(npts)),
-                sum(w[j] * dzs[j] for j in range(npts)))
+                sum(w[j] * sides[j] for j in range(npts)),
+                sum(w[j] * fwds[j] for j in range(npts)))
 
     for i in range(1, n):
         w, confidence = weights[i]
@@ -662,31 +752,31 @@ def _accumulate_root_deltas(grounds, weights, lock_mode=None, lock_axis=0.0,
             # Manually driven frame (typically a flight phase).  Direction from
             # the last trustworthy step; if the clip *opens* mid-air there is no
             # such step yet, so fall back to the feet for a direction only.
-            d_yaw, b_x, b_z = (prev_step if prev_step is not None
-                               else foot_step(i, w))
+            d_yaw, b_side, b_fwd = (prev_step if prev_step is not None
+                                    else foot_step(i, w))
             if forced is not None:
-                b_x, b_z = _rescale_step(b_x, b_z, forced)
+                b_side, b_fwd = _rescale_step(b_side, b_fwd, forced)
         elif confidence < _CONTACT_FLOOR and prev_step is not None:
             # Nothing is convincingly planted: coast on the last good step.
-            d_yaw, b_x, b_z = prev_step
+            d_yaw, b_side, b_fwd = prev_step
         else:
-            d_yaw, b_x, b_z = foot_step(i, w)
-            prev_step = (d_yaw, b_x, b_z)
+            d_yaw, b_side, b_fwd = foot_step(i, w)
+            prev_step = (d_yaw, b_side, b_fwd)
 
         # Locking happens *after* the coast branch, so a coasted step is still
         # re-aimed for the heading it is actually being applied at.
         if lock_mode == "body":
-            b_x, b_z = _redirect_onto_axis(b_x, b_z, lock_axis)
+            b_side, b_fwd = _redirect_onto_axis(b_side, b_fwd, lock_axis)
         elif lock_mode == "world":
             # Hop into world space (where the axis is defined), aim, hop back:
             # the accumulation will rotate this local step by exactly the same
             # heading again, so the world step lands on the axis.
-            heading = _yaw_from_matrix(d)          # d is still D(f-1) here
-            w_x, w_z = _rotate_xz(b_x, b_z, heading)
-            w_x, w_z = _redirect_onto_axis(w_x, w_z, lock_axis)
-            b_x, b_z = _rotate_xz(w_x, w_z, -heading)
+            heading = _ground_yaw(d)                # d is still D(f-1) here
+            w_side, w_fwd = _rotate_ground(b_side, b_fwd, heading)
+            w_side, w_fwd = _redirect_onto_axis(w_side, w_fwd, lock_axis)
+            b_side, b_fwd = _rotate_ground(w_side, w_fwd, -heading)
 
-        blended = _ground_matrix(d_yaw, b_x, b_z)
+        blended = _ground_matrix(d_yaw, b_side, b_fwd)
         d = blended * d            # D(f) = delta(f) * D(f-1)
         deltas.append(om.MMatrix(d))
 
@@ -721,14 +811,14 @@ def _coast_flags(weights, air_speeds=None):
     return flags
 
 
-def _report_pins(frames, nodes, sides, tiers, grounds, raw_ys, weights, deltas,
+def _report_pins(frames, nodes, sides, tiers, grounds, heights, weights, deltas,
                  air_speeds=None):
     """Print which pin point drives each frame, so a bad pick is visible.
 
     Two independent things go wrong in practice, and this report separates them:
 
     * **Wrong joint resolved.**  Check the legend.  A real ball/toe joint hugs
-      the ground, so its ``Y min`` should be clearly *lower* than its ankle's
+      the ground, so its ``up min`` should be clearly *lower* than its ankle's
       and its ``dist`` from the ankle should be a believable foot length.  A
       twist/helper joint gives away by sitting at ~the same height as the ankle
       with ``dist`` near 0.
@@ -753,26 +843,27 @@ def _report_pins(frames, nodes, sides, tiers, grounds, raw_ys, weights, deltas,
     print("")
     print("[pins] resolved pin points:")
     for j in range(npts):
-        ys = raw_ys[j]
+        hs = heights[j]
         a = ankle_of.get(sides[j])
         if a is None or a == j:
             dist = "     -"
         else:
             dist = "{0:>6.3f}".format(math.hypot(
-                grounds[j][0][12] - grounds[a][0][12],
-                grounds[j][0][14] - grounds[a][0][14]))
-        print("  [{0}] {1} {2:<5}  Y min {3:>9.3f}  max {4:>9.3f}  "
-              "dist-to-ankle {5}  {6}".format(
-                  j, sides[j], tiers[j], min(ys), max(ys), dist, nodes[j]))
+                grounds[j][0][12 + _SIDE] - grounds[a][0][12 + _SIDE],
+                grounds[j][0][12 + _FWD] - grounds[a][0][12 + _FWD]))
+        print("  [{0}] {1} {2:<5}  {3} min {4:>9.3f}  max {5:>9.3f}  "
+              "dist-to-ankle {6}  {7}".format(
+                  j, sides[j], tiers[j], "XYZ"[_UP], min(hs), max(hs), dist,
+                  nodes[j]))
 
     speeds = [[_horizontal_speed(grounds[j], i) for i in range(n)]
               for j in range(npts)]
-    vspeeds = [[_vertical_speed(raw_ys[j], i) for i in range(n)]
+    vspeeds = [[_vertical_speed(heights[j], i) for i in range(n)]
                for j in range(npts)]
     tier_min = {}
     for tier in set(tiers):
-        tier_min[tier] = min(y for j in range(npts) if tiers[j] == tier
-                             for y in raw_ys[j])
+        tier_min[tier] = min(h for j in range(npts) if tiers[j] == tier
+                             for h in heights[j])
 
     coast = _coast_flags(weights, air_speeds)
 
@@ -780,7 +871,8 @@ def _report_pins(frames, nodes, sides, tiers, grounds, raw_ys, weights, deltas,
     print("[pins] per-frame decision  ('*' = nothing planted, reused previous "
           "delta; '~' = manual air frame):")
     print("  frame  leader        weight   conf  height   hspd   vspd"
-          "  | travelX   travelZ  headY")
+          "  | travel{0}   travel{1}  head{2}".format(
+              "XYZ"[_SIDE], "XYZ"[_FWD], "XYZ"[_UP]))
     led = [0] * npts
     for i in range(n):
         w, conf = weights[i]
@@ -792,9 +884,10 @@ def _report_pins(frames, nodes, sides, tiers, grounds, raw_ys, weights, deltas,
         print("  {0:>5}{1} [{2}] {3} {4:<5} {5:>6.3f} {6:>6.3f} {7:>7.3f} "
               "{8:>6.3f} {9:>6.3f} | {10:>8.3f} {11:>9.3f} {12:>6.1f}".format(
                   frames[i], mark, j, sides[j], tiers[j],
-                  w[j], conf, raw_ys[j][i] - tier_min[tiers[j]],
+                  w[j], conf, heights[j][i] - tier_min[tiers[j]],
                   speeds[j][i], vspeeds[j][i],
-                  d[12], d[14], math.degrees(_yaw_from_matrix(d))))
+                  d[12 + _SIDE], d[12 + _FWD],
+                  math.degrees(_ground_yaw(d))))
 
     print("")
     print("[pins] frames led: {0}".format(", ".join(
@@ -887,8 +980,9 @@ def convert(root, foot_l, foot_r, start=None, end=None, clear_existing=True,
         direction is overridden -- so a lock can never stall the root, and
         rotation (yaw) is never affected.
     lock_axis : float
-        The locked heading in degrees, same convention as yaw (0 = forward
-        / +Z, 90 = side / +X). Ignored when ``lock_mode`` is ``None``.
+        The locked heading in degrees, same convention as yaw: 0 = the
+        world forward axis (+Z in a Y-up scene, +Y in a Z-up one),
+        90 = side / +X. Ignored when ``lock_mode`` is ``None``.
     pin_l_ranges, pin_r_ranges : list of (start, end) or None
         Frame ranges (inclusive) where the left / right *side* should be
         pinned, overriding whatever ``_contact_weights`` computed. The
@@ -923,6 +1017,10 @@ def convert(root, foot_l, foot_r, start=None, end=None, clear_existing=True,
         ``_find_toe`` -- the furthest joint child of each foot. Only used
         when ``use_toes`` is true.
     """
+    # First, because the toe search below already measures distances in the
+    # ground plane.
+    _sync_up_axis()
+
     root = _resolve_node(root)
     foot_l = _resolve_node(foot_l)
     foot_r = _resolve_node(foot_r)
@@ -964,12 +1062,6 @@ def convert(root, foot_l, foot_r, start=None, end=None, clear_existing=True,
             nodes.append(toe)
             sides.append(side)
             tiers.append("toe")
-
-    up = cmds.upAxis(q=True, axis=True)
-    if up != "y":
-        cmds.warning(
-            "Scene up-axis is '{0}'; this tool assumes Y-up. Results may be "
-            "wrong on the ground plane.".format(up))
 
     start, end = _frame_range(start, end)
     if end - start < 1:
@@ -1026,8 +1118,8 @@ def convert(root, foot_l, foot_r, start=None, end=None, clear_existing=True,
                 "airborne -- a foot cannot be planted and off the ground at "
                 "once.".format(sorted(clash)))
 
-    frames, grounds, raw_ys = _sample_points(nodes, start, end)
-    weights = _contact_weights(grounds, raw_ys, tiers, sharpness=sharpness)
+    frames, grounds, heights = _sample_points(nodes, start, end)
+    weights = _contact_weights(grounds, heights, tiers, sharpness=sharpness)
     if pin_l_ranges or pin_r_ranges:
         weights = _apply_pin_overrides(frames, weights, sides,
                                        pin_l_ranges, pin_r_ranges)
@@ -1039,12 +1131,12 @@ def convert(root, foot_l, foot_r, start=None, end=None, clear_existing=True,
     deltas = _accumulate_root_deltas(grounds, weights, lock_mode=lock_mode,
                                      lock_axis=lock_axis,
                                      air_speeds=air_speeds)
-    _report_pins(frames, nodes, sides, tiers, grounds, raw_ys, weights, deltas,
+    _report_pins(frames, nodes, sides, tiers, grounds, heights, weights, deltas,
                  air_speeds=air_speeds)
     _apply_root(root, frames, deltas, clear_existing=clear_existing)
 
     total = list(deltas[-1])
-    dist = math.hypot(total[12], total[14])
+    dist = math.hypot(total[12 + _SIDE], total[12 + _FWD])
     cmds.inViewMessage(
         amg="Root motion baked: <hl>{0}</hl> frames, travel <hl>{1:.2f}</hl> "
             "units.".format(len(frames), dist),
@@ -1100,10 +1192,13 @@ _LOCK_MODES = {
     "Follow the body's facing": "body",
 }
 
-_AXIS_LOCK_ITEMS = ("0 deg -- forward / +Z", "90 deg -- side / +X",
+# Deliberately axis-neutral labels: "forward" is +Z in a Y-up scene and +Y in a
+# Z-up one, and the window is built before a scene is necessarily loaded.  The
+# side axis is +X either way, so that one can be named.
+_AXIS_LOCK_ITEMS = ("0 deg -- forward", "90 deg -- side / +X",
                     "Custom angle...")
 _AXIS_LOCK_DEGREES = {
-    "0 deg -- forward / +Z": 0.0,
+    "0 deg -- forward": 0.0,
     "90 deg -- side / +X": 90.0,
 }
 
@@ -1283,7 +1378,10 @@ def show_ui():
         changeCommand=_toggle_axis_angle, enable=False,
         annotation="Which direction to lock to. Read as world-space when the "
                    "mode is 'Straight line in world space', or relative to "
-                   "the body's facing when it is 'Follow the body's facing'.")
+                   "the body's facing when it is 'Follow the body's facing'. "
+                   "'Forward' is the scene's forward ground axis -- +Z in a "
+                   "Y-up scene, +Y in a Z-up one; the tool prints which one it "
+                   "is using to the Script Editor when you convert.")
     for item in _AXIS_LOCK_ITEMS:
         cmds.menuItem(label=item)
     cmds.setParent("..")
@@ -1294,7 +1392,7 @@ def show_ui():
     _FIELDS["axis_lock_angle"] = cmds.floatField(
         value=0.0, precision=1, enable=False,
         annotation="Heading in degrees, same convention as the tool's yaw "
-                   "(0 = forward / +Z, 90 = side / +X).")
+                   "(0 = the scene's forward ground axis, 90 = side / +X).")
     cmds.setParent("..")
 
     _FIELDS["use_toes"] = cmds.checkBox(
