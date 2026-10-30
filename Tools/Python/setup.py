@@ -9,6 +9,7 @@ Actions performed:
   3. Write / update the VS Code .code-workspace file
   4. Patch Config\\DefaultEngine.ini (Python plugin section)
   5. Patch UnrealScripts\\path_util.py constants
+  6. Register project specific tool folders (project_tools.json + AdditionalPaths)
 """
 
 from __future__ import annotations
@@ -52,8 +53,8 @@ def abort(msg: str) -> None:
 # 1. Read & validate config
 # ---------------------------------------------------------------------------
 
-def load_config() -> tuple[Path, Path, str, list[str]]:
-    """Return (engine_dir, uproject_path, workspace_filename, plugin_py_paths)."""
+def load_config() -> tuple[Path, Path, str, list[str], list[Path]]:
+    """Return (engine_dir, uproject_path, workspace_filename, plugin_py_paths, project_tool_dirs)."""
     log_section("Reading setup_config.ini")
 
     if not CONFIG_FILE.exists():
@@ -94,6 +95,19 @@ def load_config() -> tuple[Path, Path, str, list[str]]:
     raw_plugins = get("PluginPythonPaths")
     plugin_paths = [p.strip() for p in raw_plugins.split(";") if p.strip()]
 
+    project_tool_dirs: list[Path] = []
+    for raw in get("ProjectToolPaths").split(";"):
+        raw = raw.strip()
+        if not raw:
+            continue
+        p = Path(raw)
+        if not p.is_absolute():
+            p = SCRIPT_ROOT / p
+        p = p.resolve()
+        if not p.is_dir():
+            abort(f"ProjectToolPaths entry does not exist: {p}")
+        project_tool_dirs.append(p)
+
     log(f"  Engine  : {engine_dir}")
     log(f"  Project : {uproject_path}")
     log(f"  Workspace file: {workspace_filename}")
@@ -102,7 +116,10 @@ def load_config() -> tuple[Path, Path, str, list[str]]:
         for p in plugin_paths:
             log(f"    {p}")
 
-    return engine_dir, uproject_path, workspace_filename, plugin_paths
+    for p in project_tool_dirs:
+        log(f"  Project tools: {p}")
+
+    return engine_dir, uproject_path, workspace_filename, plugin_paths, project_tool_dirs
 
 
 # ---------------------------------------------------------------------------
@@ -152,7 +169,7 @@ def install_packages(engine_dir: Path) -> None:
 # ---------------------------------------------------------------------------
 
 def update_workspace(uproject_path: Path, workspace_filename: str,
-                     plugin_paths: list[str]) -> None:
+                     plugin_paths: list[str], project_tool_dirs: list[Path]) -> None:
     log_section("Updating VS Code workspace file")
 
     uproject_root = uproject_path.parent
@@ -166,6 +183,11 @@ def update_workspace(uproject_path: Path, workspace_filename: str,
         if item.is_dir() and not item.name.startswith("."):
             folder_entries.append({"path": item.name})
             subfolder_names.append(item.name)
+
+    # Project tool folders outside SCRIPT_ROOT (the ones inside are already included above)
+    for tool_dir in project_tool_dirs:
+        if tool_dir.parent != SCRIPT_ROOT:
+            folder_entries.append({"path": os.path.relpath(tool_dir, SCRIPT_ROOT).replace("\\", "/")})
 
     # Relative path from SCRIPT_ROOT to Intermediate/PythonStub
     python_stub_abs = uproject_root / "Intermediate" / "PythonStub"
@@ -207,7 +229,7 @@ def update_workspace(uproject_path: Path, workspace_filename: str,
 # 4. Patch DefaultEngine.ini
 # ---------------------------------------------------------------------------
 
-def update_default_engine_ini(uproject_path: Path) -> None:
+def update_default_engine_ini(uproject_path: Path, project_tool_dirs: list[Path]) -> None:
     log_section("Patching Config\\DefaultEngine.ini")
 
     uproject_root = uproject_path.parent
@@ -286,6 +308,7 @@ def update_default_engine_ini(uproject_path: Path) -> None:
         f'+StartupScripts="{startup_script}"\n',
         f'+AdditionalPaths=(Path="{path_scripts}")\n',
         f'+AdditionalPaths=(Path="{path_libs}")\n',
+    ] + [f'+AdditionalPaths=(Path="{d.as_posix()}")\n' for d in project_tool_dirs] + [
         'bDeveloperMode=True\n',
     ]
 
@@ -346,6 +369,23 @@ def update_path_util(uproject_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 6. Project specific tool folders manifest
+# ---------------------------------------------------------------------------
+
+def write_project_tools_manifest(project_tool_dirs: list[Path]) -> None:
+    log_section("Registering project tool folders")
+
+    manifest = SCRIPT_ROOT / "project_tools.json"
+    manifest.write_text(
+        json.dumps({"folders": [d.as_posix() for d in project_tool_dirs]}, indent="\t") + "\n",
+        encoding="utf-8",
+    )
+    log(f"  Written: {manifest}")
+    for d in project_tool_dirs:
+        log(f"    {d}")
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -354,11 +394,12 @@ def main() -> None:
     log("Unreal Python Tools – Environment Setup")
     log(f"Script root: {SCRIPT_ROOT}")
 
-    engine_dir, uproject_path, workspace_filename, plugin_paths = load_config()
+    engine_dir, uproject_path, workspace_filename, plugin_paths, project_tool_dirs = load_config()
     install_packages(engine_dir)
-    update_workspace(uproject_path, workspace_filename, plugin_paths)
-    update_default_engine_ini(uproject_path)
+    update_workspace(uproject_path, workspace_filename, plugin_paths, project_tool_dirs)
+    update_default_engine_ini(uproject_path, project_tool_dirs)
     update_path_util(uproject_path)
+    write_project_tools_manifest(project_tool_dirs)
 
     log()
     log(SEPARATOR)

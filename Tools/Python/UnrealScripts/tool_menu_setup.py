@@ -13,6 +13,7 @@ SECTION_ACTOR_CONTEXT = "CustomActorContext"
 SECTION_CONTENT_BROWSER_CONTEXT = "CustomContentBrowserContext"
 
 MENU_SETTING_FILE = "tool_menu_settings.json"
+MENU_ITEM_KEYS = ("menu_items", "actor_context_items", "content_browser_context_items")
 
 
 class ScriptItem:
@@ -116,6 +117,16 @@ def refresh_tool_menus():
     setting_file_path = os.path.join(path_util.ue_tool_python_path(), MENU_SETTING_FILE)
     with open(setting_file_path, "r") as setting_file:
         setting = json.load(setting_file)
+
+    # append project specific tools to the common toolset
+    for folder in path_util.project_tool_folders():
+        project_setting_file = os.path.join(folder, MENU_SETTING_FILE)
+        if not os.path.isfile(project_setting_file):
+            continue
+        with open(project_setting_file, "r", encoding="utf-8") as f:
+            project_setting = json.load(f)
+        for key in MENU_ITEM_KEYS:
+            setting.setdefault(key, []).extend(project_setting.get(key, []))
 
     if setting is not None:
         python_menu_name = "{}.{}".format(MAIN_MENU_NAME, PYTHON_TOOL_MENU_NAME)

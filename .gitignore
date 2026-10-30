@@ -18,5 +18,7 @@
 /Plugins/**/Binaries
 /Plugins/**/Intermediate
 
-# Ignore Tools/Python/Libs
-/Tools/Python/Libs
+# Ignore all subfolders of Tools/Python except MayaScripts and UnrealScripts
+/Tools/Python/*/
+!/Tools/Python/MayaScripts/
+!/Tools/Python/UnrealScripts/
